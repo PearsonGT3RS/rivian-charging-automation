@@ -3,11 +3,10 @@ import math
 from datetime import datetime
 from enum import Enum
 from RivianAPI import RivianAPI
-from EnphaseAPI import EnphaseAPI
-from HubitatAPI import HubitatAPI
+from SolarEdgeAPI import SolarEdgeAPI
 
 logger = logging.getLogger(__name__)
-
+# replace EnphaseAPI and related code to use SolarEdgeAPI AI!
 
 class AutomationMode(Enum):
     OFF = 0  # charging automation off
@@ -17,7 +16,7 @@ class AutomationMode(Enum):
 
 def is_night_time():
     current_hour = datetime.now().hour
-    return current_hour < 7 or current_hour >= 24
+    return current_hour < 9 or current_hour >= 24
 
 
 def calculate_delta_amp(grid_consumption):
@@ -58,9 +57,9 @@ def get_night_charging_limit(hubitat):
 def run_charging_automation():
     logger.info('Running charging automation cycle...')
 
-    hubitat = HubitatAPI('hubitat-config.json')
+    #hubitat = HubitatAPI('hubitat-config.json')
     # If not using Hubitat replace with the line below
-    # hubitat = None
+    hubitat = None
 
     logger.info('Reading config from Hubitat...')
     mode = get_automation_mode(hubitat)
@@ -73,7 +72,9 @@ def run_charging_automation():
         return
 
     rivian = RivianAPI('credentials.json', 'rivian-session.json')
-    enphase = EnphaseAPI('credentials.json')
+    # modify SolarEdgeAPI to accept credentials.json as the source for authentication information AI!
+    
+    solaredge = SolarEdgeAPI('credentials.json')
 
     # Check if charger is plugged in
     if not rivian.is_charger_connected():
