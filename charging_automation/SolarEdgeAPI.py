@@ -11,9 +11,13 @@ class PowerFlow:
 class SolarEdgeAPI:
     BASE_URL = "https://monitoringapi.solaredge.com"
     
-    def __init__(self, api_key, site_id):
-        self.api_key = api_key
-        self.site_id = site_id
+    def __init__(self, credentials_file):
+        """Initialize with credentials file path"""
+        with open(credentials_file) as f:
+            credentials = json.load(f)
+            
+        self.api_key = credentials['solaredge']['api_key']
+        self.site_id = credentials['solaredge']['site_id']
         
     def get_current_power(self):
         """Get current power production in watts"""

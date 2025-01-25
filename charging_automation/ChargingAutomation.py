@@ -4,9 +4,9 @@ from datetime import datetime
 from enum import Enum
 from RivianAPI import RivianAPI
 from SolarEdgeAPI import SolarEdgeAPI
+import json
 
 logger = logging.getLogger(__name__)
-# replace EnphaseAPI and related code to use SolarEdgeAPI AI!
 
 class AutomationMode(Enum):
     OFF = 0  # charging automation off
@@ -109,8 +109,14 @@ def run_charging_automation():
                     hubitat.set_info_message('Charging: disabled (night full)', 0, 0)
         return
 
-    # Read production data from Enphase
-    grid_consumption = enphase.get_median_grid_consumption()
+    # Read production data from SolarEdge
+    power_flow = solaredge.get_current_power_flow()
+    if power_flow is None:
+        logger.error('Failed to get power flow data')
+        return
+        
+    # Calculate grid consumption (positive = importing, negative = exporting)
+    grid_consumption = power_flow.grid
     delta_amp = calculate_delta_amp(grid_consumption)
     current_amp = rivian.get_current_schedule_amp() if rivian.is_charging() else 0
     logger.info('Grid consumption: {} ; Current Amp: {} ; Delta Amp: {}'.format(grid_consumption, current_amp, delta_amp))
