@@ -71,9 +71,7 @@ def run_charging_automation():
         logger.info('Automation is OFF')
         return
 
-    rivian = RivianAPI('credentials.json', 'rivian-session.json')
-    # modify SolarEdgeAPI to accept credentials.json as the source for authentication information AI!
-    
+    rivian = RivianAPI('credentials.json', 'rivian-session.json')    
     solaredge = SolarEdgeAPI('credentials.json')
 
     # Check if charger is plugged in

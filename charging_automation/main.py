@@ -3,6 +3,7 @@ import sys
 import time
 from ChargingAutomation import run_charging_automation
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,7 +18,7 @@ def setup_logging():
 def main():
     setup_logging()
 
-    iteration_time = 10 * 60
+    iteration_time = 5 * 60
 
     logger.info('Charging Automation Started: run every {} seconds'.format(iteration_time))
 
