@@ -14,11 +14,11 @@ class SolarEdgeAPI:
     
     def __init__(self, credentials_file):
         """Initialize with credentials file path"""
-        with open(credentials_file) as f:
-            credentials = json.load(f)
+        #with open(credentials_file) as f:
+        #    credentials = json.load(f)
             
-        self.api_key = credentials['solaredge']['api_key']
-        self.site_id = credentials['solaredge']['site_id']
+        self.api_key = credentials_file['solaredge-api-key']
+        self.site_id = credentials_file['solaredge-site-id']
         
     def get_current_power(self):
         """Get current power production in watts"""
