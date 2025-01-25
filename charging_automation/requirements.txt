@@ -1,3 +1,4 @@
 requests
 PyJWT
 Enphase_API
+SolarEdgeAPI

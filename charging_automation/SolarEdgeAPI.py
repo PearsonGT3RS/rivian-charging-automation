@@ -58,13 +58,11 @@ class SolarEdgeAPI:
             power_flow = data['siteCurrentPowerFlow']
             
             # Extract values from power flow data
-            pv = power_flow.get('PV', {}).get('currentPower', 0)
-            grid = power_flow.get('GRID', {}).get('currentPower', 0)
-            load = power_flow.get('LOAD', {}).get('currentPower', 0)
+            pv = power_flow.get('PV', {}).get('currentPower', 0) * 1000
+            load = power_flow.get('LOAD', {}).get('currentPower', 0) * 1000
             
             # Grid power is positive when importing, negative when exporting
-            # So we need to flip the sign to match common convention
-            grid = -grid
+            grid = load - pv
             
             return PowerFlow(pv=pv, grid=grid, load=load)
             
