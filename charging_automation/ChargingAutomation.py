@@ -16,7 +16,7 @@ class AutomationMode(Enum):
 
 def is_night_time():
     current_hour = datetime.now().hour
-    return current_hour < 9 or current_hour >= 24
+    return current_hour < 10 or current_hour >= 18
 
 
 def calculate_delta_amp(grid_consumption):
