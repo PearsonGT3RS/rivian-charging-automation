@@ -98,6 +98,7 @@ class RivianAPI:
         data = response.json()
         self.vehicle_id = data['data']['currentUser']['vehicles'][0]['id']
         logger.info('Rivian user data loaded')
+        logger.info('Rivian Data', format(data))
         return True
 
     def init_vehicle_info(self):
@@ -130,6 +131,7 @@ class RivianAPI:
         self.charging_status = data['data']['vehicleState']['chargerStatus']['value']
         self.battery_level = data['data']['vehicleState']['batteryLevel']['value']
         logger.info('Rivian vehicle data loaded')
+        logger.info('Rivian vehicle data:', format(data))
 
     def login(self):
         # check stored session first
@@ -184,6 +186,7 @@ class RivianAPI:
             return None
 
         data = response.json()
+        logger.info('Schedule data returned: {}'.format(data))
         return data['data']['getVehicle']['chargingSchedules']
 
     def get_current_schedule_amp(self):
