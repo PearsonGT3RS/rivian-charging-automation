@@ -15,8 +15,8 @@ class RivianAPI:
     AMPS_MAX = 48
     AMPS_MIN = 8
 
-    def __init__(self, credentials_file, session_file):
-        self.credentials_file = credentials_file
+    def __init__(self, config, session_file):
+        self.config = config
         self.session_file = session_file
         self.app_session_token = None
         self.user_session_token = None
@@ -46,10 +46,8 @@ class RivianAPI:
         self.csrf_token = data['data']['createCsrfToken']['csrfToken']
         self.app_session_token = data['data']['createCsrfToken']['appSessionToken']
 
-        with open(self.credentials_file) as f:
-            data = json.load(f)
-            username = data['rivian-user']
-            password = data['rivian-pass']
+        username = self.config.rivian_user
+        password = self.config.rivian_pass
 
         request = {
             "operationName": "Login",
@@ -88,7 +86,8 @@ class RivianAPI:
         headers = {
             'a-sess': self.app_session_token,
             'u-sess': self.user_session_token,
-            'csrf-token': self.csrf_token
+            'csrf-token': self.csrf_token,
+            'apollographql-client-name': 'com.rivian.android.consumer'
         }
 
         response = requests.post(self.GATEWAY_URL, headers=headers, json=request)
@@ -98,7 +97,6 @@ class RivianAPI:
         data = response.json()
         self.vehicle_id = data['data']['currentUser']['vehicles'][0]['id']
         logger.info('Rivian user data loaded')
-        logger.info('Rivian Data', format(data))
         return True
 
     def init_vehicle_info(self):
@@ -114,7 +112,8 @@ class RivianAPI:
         headers = {
             'a-sess': self.app_session_token,
             'u-sess': self.user_session_token,
-            'csrf-token': self.csrf_token
+            'csrf-token': self.csrf_token,
+            'apollographql-client-name': 'com.rivian.android.consumer'
         }
         response = requests.post(self.GATEWAY_URL, headers=headers, json=request)
 
@@ -131,7 +130,6 @@ class RivianAPI:
         self.charging_status = data['data']['vehicleState']['chargerStatus']['value']
         self.battery_level = data['data']['vehicleState']['batteryLevel']['value']
         logger.info('Rivian vehicle data loaded')
-        logger.info('Rivian vehicle data:', format(data))
 
     def login(self):
         # check stored session first
@@ -177,7 +175,8 @@ class RivianAPI:
         headers = {
             'a-sess': self.app_session_token,
             'u-sess': self.user_session_token,
-            'csrf-token': self.csrf_token
+            'csrf-token': self.csrf_token,
+            'apollographql-client-name': 'com.rivian.android.consumer'
         }
         response = requests.post(self.GATEWAY_URL, headers=headers, json=request)
 
@@ -186,7 +185,6 @@ class RivianAPI:
             return None
 
         data = response.json()
-        logger.info('Schedule data returned: {}'.format(data))
         return data['data']['getVehicle']['chargingSchedules']
 
     def get_current_schedule_amp(self):
@@ -248,7 +246,8 @@ class RivianAPI:
         headers = {
             'a-sess': self.app_session_token,
             'u-sess': self.user_session_token,
-            'csrf-token': self.csrf_token
+            'csrf-token': self.csrf_token,
+            'apollographql-client-name': 'com.rivian.android.consumer'
         }
         response = requests.post(self.GATEWAY_URL, headers=headers, json=request)
 
