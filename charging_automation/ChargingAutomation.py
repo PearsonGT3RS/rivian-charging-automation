@@ -82,11 +82,15 @@ def run_charging_automation():
             hubitat.set_info_message('Charging: not plugged in', 0, 0)
         return
 
+    #current charging speed
+    current_amp = rivian.get_current_schedule_amp() if rivian.is_charging() else 0
+
     # Check night time
     if is_night_time():
         if mode == AutomationMode.SOLAR_ONLY:
             logger.info('Mode == Solar-only: Disabling charging at night')
             rivian.set_schedule_off()
+            current_amp = 0
             if hubitat:
                 hubitat.set_info_message('Charging: disabled (night off)', 0, 0)
         if mode == AutomationMode.DEFAULT:
@@ -99,10 +103,13 @@ def run_charging_automation():
                 rivian.set_schedule_default()
                 if hubitat:
                     hubitat.set_info_message('Charging: enabled (night)', RivianAPI.AMPS_MAX, 0)
+                #short-circuit if already charging
+                return
             else:
                 logger.info('Mode == Default: Charged to {}% at night (already at {}%)'.format(
                     charging_limit, round(ev_battery_level)))
                 rivian.set_schedule_off()
+                current_amp = 0
                 if hubitat:
                     hubitat.set_info_message('Charging: disabled (night full)', 0, 0)
         return
