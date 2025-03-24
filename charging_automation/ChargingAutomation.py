@@ -2,8 +2,10 @@ import logging
 import math
 from datetime import datetime
 from enum import Enum
+from Config import Config
 from RivianAPI import RivianAPI
 from SolarEdgeAPI import SolarEdgeAPI
+
 import json
 
 logger = logging.getLogger(__name__)
@@ -14,9 +16,9 @@ class AutomationMode(Enum):
     SOLAR_ONLY = 2  # only using excess solar, not charging at night
 
 
-def is_night_time():
+def is_night_time(config):
     current_hour = datetime.now().hour
-    return current_hour < 10 or current_hour >= 18
+    return current_hour < config.night_time_end or current_hour >= config.night_time_start
 
 
 def calculate_delta_amp(grid_consumption):
@@ -71,8 +73,9 @@ def run_charging_automation():
         logger.info('Automation is OFF')
         return
 
-    rivian = RivianAPI('credentials.json', 'rivian-session.json')    
-    solaredge = SolarEdgeAPI('credentials.json')
+    config = Config('config.json')
+    rivian = RivianAPI(config, 'rivian-session.json')    
+    solaredge = SolarEdgeAPI('config.json')
 
     # Check if charger is plugged in
     if not rivian.is_charger_connected():
@@ -86,7 +89,8 @@ def run_charging_automation():
     current_amp = rivian.get_current_schedule_amp() if rivian.is_charging() else 0
 
     # Check night time
-    if is_night_time():
+    if is_night_time(config):
+        charging = False
         if mode == AutomationMode.SOLAR_ONLY:
             logger.info('Mode == Solar-only: Disabling charging at night')
             rivian.set_schedule_off()
@@ -101,10 +105,9 @@ def run_charging_automation():
                 logger.info('Mode == Default: Charging to {}% at night (now at {}%)'.format(
                     charging_limit, round(ev_battery_level)))
                 rivian.set_schedule_default()
+                charging = True
                 if hubitat:
                     hubitat.set_info_message('Charging: enabled (night)', RivianAPI.AMPS_MAX, 0)
-                #short-circuit if already charging
-                return
             else:
                 logger.info('Mode == Default: Charged to {}% at night (already at {}%)'.format(
                     charging_limit, round(ev_battery_level)))
@@ -113,6 +116,9 @@ def run_charging_automation():
                 if hubitat:
                     hubitat.set_info_message('Charging: disabled (night full)', 0, 0)
         return
+        #Short-circuit if already charging
+        if charging:
+            return
 
     # Read production data from SolarEdge
     power_flow = solaredge.get_current_power_flow()
