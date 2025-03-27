@@ -72,7 +72,7 @@ def run_charging_automation():
         return
 
     rivian = RivianAPI('credentials.json', 'rivian-session.json')    
-    solaredge = SolarEdgeAPI('credentials.json')
+    solaredge = SolarEdgeAPI('config.json')
 
     # Check if charger is plugged in
     if not rivian.is_charger_connected():
