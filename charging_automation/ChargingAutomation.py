@@ -3,6 +3,7 @@ import math
 from datetime import datetime
 from enum import Enum
 from RivianAPI import RivianAPI
+from TeslaAPI import TeslaAPI
 from SolarEdgeAPI import SolarEdgeAPI
 import json
 
@@ -54,6 +55,37 @@ def get_night_charging_limit(hubitat):
     return limit
 
 
+def allocate_power(vehicles, available_power):
+    """Allocate available power to vehicles based on state of charge"""
+    # Sort vehicles by state of charge (lowest first)
+    sorted_vehicles = sorted(vehicles, key=lambda v: v.get_battery_level())
+    
+    total_allocated = 0
+    allocations = []
+    
+    for vehicle in sorted_vehicles:
+        if not vehicle.is_charger_connected():
+            allocations.append(0)
+            continue
+            
+        # Calculate fair share based on remaining vehicles
+        remaining_power = available_power - total_allocated
+        remaining_vehicles = len(sorted_vehicles) - len(allocations)
+        fair_share = remaining_power / remaining_vehicles
+        
+        # Calculate max possible for this vehicle
+        max_possible = min(
+            fair_share * 2,  # Bias toward lower SOC vehicles
+            vehicle.AMPS_MAX * 240,  # Convert to watts
+            remaining_power
+        )
+        
+        allocation = max(0, max_possible)
+        allocations.append(allocation)
+        total_allocated += allocation
+    
+    return allocations
+
 def run_charging_automation():
     logger.info('Running charging automation cycle...')
 
@@ -71,19 +103,21 @@ def run_charging_automation():
         logger.info('Automation is OFF')
         return
 
-    rivian = RivianAPI('credentials.json', 'rivian-session.json')    
+    # Initialize vehicle APIs
+    rivian = RivianAPI('credentials.json', 'rivian-session.json')
+    tesla = TeslaAPI('credentials.json', 'tesla-session.json')
     solaredge = SolarEdgeAPI('config.json')
+    
+    vehicles = [rivian, tesla]
 
-    # Check if charger is plugged in
-    if not rivian.is_charger_connected():
-        logger.info('Charger not plugged in')
-        rivian.set_schedule_off()
+    # Check if any chargers are plugged in
+    if not any(v.is_charger_connected() for v in vehicles):
+        logger.info('No chargers plugged in')
+        for vehicle in vehicles:
+            vehicle.set_schedule_off()
         if hubitat:
             hubitat.set_info_message('Charging: not plugged in', 0, 0)
         return
-
-    #current charging speed
-    current_amp = rivian.get_current_schedule_amp() if rivian.is_charging() else 0
 
     # Check night time
     if is_night_time():
@@ -120,38 +154,45 @@ def run_charging_automation():
         logger.error('Failed to get power flow data')
         return
         
-    # Calculate grid consumption (positive = importing, negative = exporting)
-    grid_consumption = power_flow.grid
-    delta_amp = calculate_delta_amp(grid_consumption)
-    current_amp = rivian.get_current_schedule_amp() if rivian.is_charging() else 0
-    logger.info('Grid consumption: {} ; Current Amp: {} ; Delta Amp: {}'.format(grid_consumption, current_amp, delta_amp))
+    # Calculate available power (negative grid means excess power)
+    available_power = -power_flow.grid
+    
+    # Get current charging power
+    current_power = sum(
+        v.get_current_schedule_amp() * 240 if v.is_charging() else 0 
+        for v in vehicles
+    )
+    
+    # Calculate power adjustment needed
+    power_delta = available_power - current_power
+    logger.info(f'Available power: {available_power}W ; Current power: {current_power}W ; Delta: {power_delta}W')
 
-    if is_delta_amp_too_small(delta_amp):
-        # Ignore small changes to avoid flipping
+    if abs(power_delta) < 720:  # 3A * 240V = 720W threshold
         logger.info('Small or no change. Ignoring')
-        # Always set the expected state
-        rivian.set_schedule_amps(current_amp)
-        if hubitat:
-            hubitat.set_info_message(
-                'Charging: disabled' if current_amp == 0 else 'Charging: enabled',
-                current_amp,
-                grid_consumption)
         return
 
-    new_amp = current_amp + delta_amp
-    if new_amp > RivianAPI.AMPS_MAX:
-        new_amp = RivianAPI.AMPS_MAX
-    if new_amp < RivianAPI.AMPS_MIN:
-        new_amp = 0
-
-    logger.info('Current Amp: {} ; New Amp: {}'.format(current_amp, new_amp))
-    if new_amp == 0:
-        rivian.set_schedule_off()
-        if hubitat:
-            hubitat.set_info_message('Charging: disabled', new_amp, grid_consumption)
-    else:
-        rivian.set_schedule_amps(new_amp)
-        if hubitat:
-            hubitat.set_info_message('Charging: enabled', new_amp, grid_consumption)
+    # Allocate power to vehicles
+    power_allocations = allocate_power(vehicles, available_power)
+    
+    # Apply allocations
+    total_amps = 0
+    for vehicle, allocation in zip(vehicles, power_allocations):
+        amps = round(allocation / 240)
+        if amps == 0:
+            vehicle.set_schedule_off()
+        else:
+            vehicle.set_schedule_amps(amps)
+        total_amps += amps
+    
+    # Update Hubitat display
+    if hubitat:
+        if total_amps == 0:
+            hubitat.set_info_message('Charging: disabled', 0, power_flow.grid)
+        else:
+            hubitat.set_info_message(
+                f'Charging: {len([v for v in vehicles if v.is_charging()])} vehicles',
+                total_amps,
+                power_flow.grid
+            )
 
     logger.info('Automation cycle complete')
