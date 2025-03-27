@@ -20,13 +20,28 @@ def is_night_time():
     return current_hour < 10 or current_hour >= 18
 
 
-def calculate_delta_amp(grid_consumption):
-    # Amp = Watt / 240
-    # round up to 2Amp — charger minimal step
-    # If grid consumption is positive we want to round up and decrease more to avoid consuming at all.
-    # If consumption is negative we also round up a negative number to make a smaller absolute increase in Amps.
-
-    delta_amp = -math.ceil(grid_consumption / 240 / 2) * 2
+def calculate_delta_amp(grid_consumption, vehicle_type):
+    """Calculate amp adjustment based on grid consumption and vehicle type
+    Args:
+        grid_consumption: Current grid power flow (positive = importing)
+        vehicle_type: Either 'tesla' or 'rivian' to determine amp increment
+    Returns:
+        Suggested amp adjustment (negative to reduce consumption)
+    """
+    # Tesla supports 1A increments, Rivian requires 2A
+    increment = 1 if vehicle_type == 'tesla' else 2
+    
+    # Calculate base amp change needed (Watt / 240V)
+    base_amps = grid_consumption / 240
+    
+    # Round to nearest increment in the direction that reduces grid consumption
+    # For positive grid (importing), we want to round up the negative adjustment
+    # For negative grid (exporting), we want to round down the negative adjustment
+    if grid_consumption > 0:
+        delta_amp = -math.ceil(abs(base_amps) / increment) * increment
+    else:
+        delta_amp = -math.floor(abs(base_amps) / increment) * increment
+        
     return delta_amp
 
 
@@ -174,10 +189,13 @@ def run_charging_automation():
     # Allocate power to vehicles
     power_allocations = allocate_power(vehicles, available_power)
     
-    # Apply allocations
+    # Apply allocations with vehicle-specific increments
     total_amps = 0
     for vehicle, allocation in zip(vehicles, power_allocations):
-        amps = round(allocation / 240)
+        vehicle_type = 'tesla' if isinstance(vehicle, TeslaAPI) else 'rivian'
+        base_amps = allocation / 240
+        amps = calculate_delta_amp(-base_amps * 240, vehicle_type)  # Convert back to grid consumption style
+        amps = max(vehicle.AMPS_MIN, min(amps, vehicle.AMPS_MAX))  # Clamp to vehicle limits
         if amps == 0:
             vehicle.set_schedule_off()
         else:
