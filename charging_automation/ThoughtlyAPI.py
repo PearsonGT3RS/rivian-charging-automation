@@ -19,6 +19,48 @@ class ThoughtlyAPI:
             'team_id': self.team_id
         })
 
+    def get_agents(
+        self,
+        search: Optional[str] = None,
+        status: Optional[str] = None,
+        sort: Optional[str] = None,
+        all_interviews: Optional[bool] = None,
+        page: Optional[int] = None,
+        limit: Optional[int] = None
+    ) -> Dict:
+        """Get list of agents from Thoughtly
+        
+        Args:
+            search: Search term to filter agents
+            status: Filter by status ('ACTIVE' or 'ARCHIVED')
+            sort: Sort field ('title_asc', 'title_desc', 'created_asc', 'created_desc')
+            all_interviews: Include archived agents
+            page: Page number for pagination
+            limit: Number of results per page (1-50)
+            
+        Returns:
+            Dict containing API response with agents list
+        """
+        url = f"{self.BASE_URL}/interview"
+        params = {
+            'search': search,
+            'status': status,
+            'sort': sort,
+            'all_interviews': all_interviews,
+            'page': page,
+            'limit': limit
+        }
+        # Remove None values from params
+        params = {k: v for k, v in params.items() if v is not None}
+        
+        try:
+            response = self.session.get(url, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to get Thoughtly agents: {e}")
+            raise
+
     def create_contact(
         self,
         phone_number: str,
