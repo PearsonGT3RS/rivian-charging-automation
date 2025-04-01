@@ -203,6 +203,22 @@ class ThoughtlyAPI:
             logger.error(f"Failed to call Thoughtly contact: {e}")
             raise
 
+    def get_user_details(self) -> Dict:
+        """Get details of the currently authenticated user
+        
+        Returns:
+            Dict containing user details including ID, name, and email
+        """
+        url = f"{self.BASE_URL}/user"
+        
+        try:
+            response = self.session.get(url)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to get Thoughtly user details: {e}")
+            raise
+
     def create_contact(
         self,
         phone_number: str,
