@@ -172,6 +172,37 @@ class ThoughtlyAPI:
             logger.error(f"Failed to delete Thoughtly contact: {e}")
             raise
 
+    def call_contact(
+        self,
+        contact_id: str,
+        interview_id: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict:
+        """Initiate a call to a contact using a specific agent
+        
+        Args:
+            contact_id: ID of the contact to call
+            interview_id: ID of the agent to use for the call
+            metadata: Additional data the agent can reference during call
+            
+        Returns:
+            Dict containing API response
+        """
+        url = f"{self.BASE_URL}/contact/call"
+        payload = {
+            "contact_id": contact_id,
+            "interview_id": interview_id,
+            "metadata": metadata or {}
+        }
+        
+        try:
+            response = self.session.post(url, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to call Thoughtly contact: {e}")
+            raise
+
     def create_contact(
         self,
         phone_number: str,
