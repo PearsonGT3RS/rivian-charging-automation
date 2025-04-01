@@ -153,6 +153,25 @@ class ThoughtlyAPI:
             logger.error(f"Failed to get Thoughtly contacts: {e}")
             raise
 
+    def delete_contact(self, contact_id: str) -> Dict:
+        """Delete a contact from Thoughtly
+        
+        Args:
+            contact_id: The ID of the contact to delete
+            
+        Returns:
+            Dict containing API response
+        """
+        url = f"{self.BASE_URL}/contact/{contact_id}"
+        
+        try:
+            response = self.session.delete(url)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to delete Thoughtly contact: {e}")
+            raise
+
     def create_contact(
         self,
         phone_number: str,
