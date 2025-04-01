@@ -105,6 +105,54 @@ class ThoughtlyAPI:
             logger.error(f"Failed to search Thoughtly calls: {e}")
             raise
 
+    def get_contacts(
+        self,
+        search: Optional[str] = None,
+        phone_numbers_only: Optional[bool] = None,
+        tags: Optional[List[str]] = None,
+        excluded_tags: Optional[List[str]] = None,
+        sort: Optional[str] = None,
+        sort_direction: Optional[str] = None,
+        page: Optional[int] = None,
+        limit: Optional[int] = None
+    ) -> Dict:
+        """Get list of contacts from Thoughtly with filtering options
+        
+        Args:
+            search: Search term to filter contacts
+            phone_numbers_only: Only return contacts with phone numbers
+            tags: Filter by tags associated with contacts
+            excluded_tags: Exclude contacts with these tags
+            sort: Field to sort by (e.g. 'name', 'created')
+            sort_direction: Sort direction ('asc' or 'desc')
+            page: Page number for pagination
+            limit: Number of results per page (1-50)
+            
+        Returns:
+            Dict containing API response with contacts list
+        """
+        url = f"{self.BASE_URL}/contact"
+        params = {
+            'search': search,
+            'phone_numbers_only': phone_numbers_only,
+            'tags': tags,
+            'excluded_tags': excluded_tags,
+            'sort': sort,
+            'sortDirection': sort_direction,
+            'page': page,
+            'limit': limit
+        }
+        # Remove None values from params
+        params = {k: v for k, v in params.items() if v is not None}
+        
+        try:
+            response = self.session.get(url, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to get Thoughtly contacts: {e}")
+            raise
+
     def create_contact(
         self,
         phone_number: str,
