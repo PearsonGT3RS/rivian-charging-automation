@@ -219,6 +219,98 @@ class ThoughtlyAPI:
             logger.error(f"Failed to get Thoughtly user details: {e}")
             raise
 
+    def create_job(
+        self,
+        name: str,
+        description: str,
+        interview_id: str,
+        contacts: List[str],
+        metadata: Optional[Dict] = None
+    ) -> Dict:
+        """Create a new job in Thoughtly
+        
+        Args:
+            name: Name of the job
+            description: Description of the job
+            interview_id: ID of agent to use
+            contacts: List of contact IDs to include
+            metadata: Additional job metadata
+            
+        Returns:
+            Dict containing API response
+        """
+        url = f"{self.BASE_URL}/job/create"
+        payload = {
+            "name": name,
+            "description": description,
+            "interview_id": interview_id,
+            "contacts": contacts,
+            "metadata": metadata or {}
+        }
+        
+        try:
+            response = self.session.post(url, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to create Thoughtly job: {e}")
+            raise
+
+    def subscribe_to_webhook(
+        self,
+        url: str,
+        events: List[str],
+        secret: Optional[str] = None
+    ) -> Dict:
+        """Subscribe to Thoughtly webhook events
+        
+        Args:
+            url: Your webhook endpoint URL
+            events: List of events to subscribe to
+            secret: Optional secret for verifying webhooks
+            
+        Returns:
+            Dict containing subscription details
+        """
+        endpoint = f"{self.BASE_URL}/webhooks/subscribe"
+        payload = {
+            "url": url,
+            "events": events,
+            "secret": secret
+        }
+        
+        try:
+            response = self.session.post(endpoint, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to subscribe to Thoughtly webhook: {e}")
+            raise
+
+    def trigger_automation(
+        self,
+        webhook_id: str,
+        payload: Dict
+    ) -> Dict:
+        """Trigger automation via webhook
+        
+        Args:
+            webhook_id: ID of the webhook to trigger
+            payload: Data to send with the webhook
+            
+        Returns:
+            Dict containing API response
+        """
+        endpoint = f"{self.BASE_URL}/webhooks/trigger/{webhook_id}"
+        
+        try:
+            response = self.session.post(endpoint, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to trigger Thoughtly automation: {e}")
+            raise
+
     def create_contact(
         self,
         phone_number: str,
