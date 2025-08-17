@@ -18,6 +18,7 @@ class AutomationMode(Enum):
 
 def is_night_time(config):
     current_hour = datetime.now().hour
+    logger.info('Start Night: {} ; End Night: {}'.format(config.night_time_start, config.night_time_end))
     return current_hour < config.night_time_end or current_hour >= config.night_time_start
 
 
@@ -32,7 +33,7 @@ def calculate_delta_amp(grid_consumption):
 
 
 def is_delta_amp_too_small(delta_amp):
-    return -3 < delta_amp < 3
+    return -2 < delta_amp < 2
 
 
 def get_automation_mode(hubitat):
