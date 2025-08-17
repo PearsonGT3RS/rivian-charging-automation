@@ -8,7 +8,7 @@ import requests
 import uuid
 
 GATEWAY_URL = 'https://rivian.com/api/gql/gateway/graphql'
-CREDENTIALS_FILE = 'charging_automation/credentials.json'
+CREDENTIALS_FILE = 'charging_automation/config.json'
 SESSION_FILE = 'charging_automation/rivian-session.json'
 
 
