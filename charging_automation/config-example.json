@@ -1,0 +1,6 @@
+{
+    "rivian-user": "your rivian username",
+    "rivian-pass": "your rivian password",
+    "solaredge-api-key":  "your SolarEdge Admin API key for version 1.0",
+    "solaredge-site-id":  "your SolarEdge SiteID from the Admin console"
+}
