@@ -1,6 +1,6 @@
 # Run this script to initialize the Rivian API session that uses two factor
 # authentication.
-# Reads username and password from credentials.json and writes the session info
+# Reads username and password from config.json and writes the session info
 # to rivian-session.json
 
 import json
