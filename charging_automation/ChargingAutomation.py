@@ -36,20 +36,24 @@ def calculate_delta_amp(grid_consumption, vehicle_type):
     
     # Calculate base amp change needed (Watt / 240V)
     base_amps = grid_consumption / 240
-    
+
+    logger.info(f"Grid Consumption value: {grid_consumption}")
+
     # Round to nearest increment in the direction that reduces grid consumption
     # For positive grid (importing), we want to round up the negative adjustment
     # For negative grid (exporting), we want to round down the negative adjustment
     if grid_consumption > 0:
-        delta_amp = -math.ceil(abs(base_amps) / increment) * increment
+        delta_amp = math.ceil(abs(base_amps) / increment) * increment
     else:
         delta_amp = -math.floor(abs(base_amps) / increment) * increment
-        
+       
+    logger.info(f"Delta Amp Calc: {delta_amp}")
+ 
     return delta_amp
 
 
 def is_delta_amp_too_small(delta_amp):
-    return -2 < delta_amp < 2
+    return -3 < delta_amp < 3
 
 
 def get_automation_mode(hubitat):
@@ -177,46 +181,68 @@ def run_charging_automation():
         
     # Calculate available power (negative grid means excess power)
     available_power = -power_flow.grid
+    logger.info("AP: %d", available_power)
     
     # Get current charging power
     current_power = sum(
         v.get_current_schedule_amp() * 240 if v.is_charging() else 0 
         for v in vehicles
     )
-    
+    logger.info(f'Current charging power: {current_power}W')    
     # Calculate power adjustment needed
     power_delta = available_power - current_power
     logger.info(f'Available power: {available_power}W ; Current power: {current_power}W ; Delta: {power_delta}W')
 
-    if abs(power_delta) < 720:  # 3A * 240V = 720W threshold
+    if abs(power_delta) < 500:  # 2A * 240V = 500W threshold
         logger.info('Small or no change. Ignoring')
         return
 
     # Allocate power to vehicles
-    power_allocations = allocate_power(vehicles, available_power)
+    #power_allocations = allocate_power(vehicles, available_power)
     
     # Apply allocations with vehicle-specific increments
     total_amps = 0
-    for vehicle, allocation in zip(vehicles, power_allocations):
-        vehicle_type = 'tesla' if isinstance(vehicle, TeslaAPI) else 'rivian'
-        base_amps = allocation / 240
-        amps = calculate_delta_amp(-base_amps * 240, vehicle_type)  # Convert back to grid consumption style
-        amps = max(vehicle.AMPS_MIN, min(amps, vehicle.AMPS_MAX))  # Clamp to vehicle limits
-        if amps == 0:
-            vehicle.set_schedule_off()
-        else:
-            vehicle.set_schedule_amps(amps)
-        total_amps += amps
+    #for vehicle, allocation in zip(vehicles, power_allocations):
+    #vehicle_type = 'tesla' if isinstance(vehicle, TeslaAPI) else 'rivian'
+    vehicle = rivian
+    vehicle_type = 'rivian'
+
+    logger.info("vehicle_type %s", vehicle_type) 
+    base_amps = power_delta / 240
+
+    delta_amps = calculate_delta_amp(power_delta, vehicle_type)  # Convert back to grid consumption style
+    #delta_amps = max(vehicle.AMPS_MIN, min(delta_amps, vehicle.AMPS_MAX))  # Clamp to vehicle limits
+
+    logger.info(f"Base Amps: {base_amps}; Power Delta {power_delta}; Amps before function call: {delta_amps}")
     
-    # Update Hubitat display
-    if hubitat:
-        if total_amps == 0:
-            hubitat.set_info_message('Charging: disabled', 0, power_flow.grid)
-        else:
-            hubitat.set_info_message(
-                f'Charging: {len([v for v in vehicles if v.is_charging()])} vehicles',
-                total_amps,
-                power_flow.grid
-            )
+    logger.info("Min Amps: %s", vehicle.AMPS_MIN)
+    logger.info("Max Amps: %s", vehicle.AMPS_MAX)
+    logger.info("delta_amps: %d", delta_amps)
+
+    #if delta_amps <= 0:
+    #    vehicle.set_schedule_off()
+    #else:
+    #    vehicle.set_schedule_amps(delta_amps)
+    #    logger.info("New Amps: {delta_amps}")
+    #total_amps += delta_amps
+   
+
+    new_amp = (current_power / 240) + delta_amps
+    if new_amp > RivianAPI.AMPS_MAX:
+        new_amp = RivianAPI.AMPS_MAX
+    if new_amp < RivianAPI.AMPS_MIN:
+        new_amp = 0 
+    
+    if new_amp == 0:
+        rivian.set_schedule_off()
+    	# Update Hubitat display
+        if hubitat:
+            hubitat.set_info_message('Charging: disabled', new_amp, grid_consumption)
+    else:
+        rivian.set_schedule_amps(new_amp)
+        if hubitat:
+            hubitat.set_info_message('Charging: enabled', new_amp, grid_consumption)
 
     logger.info('Automation cycle complete')
+    logger.info(f"Final values:  New Amp: {new_amp}; Delta Amps:  {delta_amps}, Current Amps: {(current_power / 240)}")
+
