@@ -152,6 +152,29 @@ class TeslaAPI:
         return asyncio.run(wrapper())
 
     # --- Commands ---
+
+    def get_state(self):
+        """Checks the vehicle state (online, asleep, offline) without waking it."""
+        try:
+            # api.vehicle_list() returns cached cloud state
+            vehicles = self._run_async(lambda api, _: api.vehicle_list())
+            for v in vehicles.get('vehicles', []):
+                if v['vin'] == self.vin:
+                    return v['state']
+            return "unknown"
+        except Exception:
+            return "offline"
+
+    def get_battery_level(self):
+        """Returns battery level or None if the car is asleep."""
+        try:
+            data = self.get_vehicle_data()
+            return data.get('charge_state', {}).get('battery_level')
+        except Exception: # Catch VehicleOffline specifically
+            return None
+
+
+
 # --- Observation Methods (Read) ---
 
     def is_charger_connected(self):
