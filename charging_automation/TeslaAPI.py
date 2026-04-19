@@ -72,6 +72,28 @@ class TeslaAPI:
             logger.error(f"CRITICAL: Key parsing failed: {e}")
             return None
 
+    async def charge_start(self):
+        """Starts the charging session (Signed Command)"""
+        try:
+            # self.vehicle is your VehicleSigned instance
+            result = await self.vehicle.charge_start()
+            logger.info(f"Charge Start command sent: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to start charging: {e}")
+            return None
+
+    async def charge_stop(self):
+        """Stops the charging session (Signed Command)"""
+        try:
+            result = await self.vehicle.charge_stop()
+            logger.info(f"Charge Stop command sent: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to stop charging: {e}")
+            return None
+
+
     async def _refresh_tokens_async(self, session):
         logger.info("Refreshing Tesla access token...")
         url = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
