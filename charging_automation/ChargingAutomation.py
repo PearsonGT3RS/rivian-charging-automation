@@ -147,9 +147,6 @@ def apply_charging(vehicle, target_watts, increment, vehicle_name):
             vehicle.set_charging_amps(target_amps) # Signed Amps
         else:
             vehicle.set_schedule_amps(target_amps) # Rivian Schedule Amps (no wake-up needed)
-        vehicle.wake_up() # Ensure Highland is awake for the signed command
-        vehicle.charge_start() # New Tesla Signed Command
-        vehicle.set_charging_amps(target_amps) # Signed Amps
     else:
         # Already charging, just update the amperage (no hysteresis needed for amp changes)
         if vehicle_name == "Tesla":
