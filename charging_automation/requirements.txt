@@ -1,5 +1,5 @@
 requests
 PyJWT
 requests==2.31.0
-python-tesla-fleet-api==0.6.1
+tesla-fleet-api>=1.4.0
 # Add any specific library you are using for the Rivian/SolarEdge APIs

@@ -134,14 +134,18 @@ def run_charging_automation():
         logger.info('Automation is OFF')
         return
 
-    config = Config('/app/config.json')
-    rivian = RivianAPI(config, '/app/sessions/rivian-session.json')
-    tesla = TeslaAPI('/app/config.json', '/app/sessions/tesla-session.json')
-    solaredge = SolarEdgeAPI('/app/config.json')
+    config = Config('app/config.json')
+    rivian = RivianAPI(config, 'app/sessions/rivian-session.json')
+    tesla = TeslaAPI('app/config.json', 'app/sessions/tesla-session.json')
+    solaredge = SolarEdgeAPI('app/config.json')
 
     rivian_connected = rivian.is_charger_connected()
     tesla_connected = tesla.is_charger_connected()
     logger.info('Rivian connected: %s  Tesla connected: %s', rivian_connected, tesla_connected)
+    
+    battery_percent = tesla.get_battery_level()
+    print(f"Highland Battery Level: {battery_percent}%")
+
 
     if not rivian_connected and not tesla_connected:
         logger.info('No chargers plugged in')
