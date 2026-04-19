@@ -1,9 +1,14 @@
 *__pycache__*
 .idea/
 charging_automation/configuration/
+config.*
+credentials.*
 charging_automation/credentials.json
-charging_automation/config.json
 charging_automation/hubitat-config.json
 charging_automation/rivian-session.json
 charging_automation/tesla-session.json
+charging_automation/app/sessions/rivian-session.json
+charging_automation/app/sessions/tesla-session.json
+charging_automation/app/config.json
+charging_automation/app/private-key.pem
 .aider*
