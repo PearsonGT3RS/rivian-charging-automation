@@ -135,8 +135,8 @@ def run_charging_automation():
         return
 
     config = Config('/app/config.json')
-    rivian = RivianAPI(config, '/app/sessions/rivian-session.json')
-    tesla = TeslaAPI('/app/config.json', '/app/sessions/tesla-session.json')
+    rivian = RivianAPI(config, '/sessions/rivian-session.json')
+    tesla = TeslaAPI('/app/config.json', '/sessions/tesla-session.json')
     solaredge = SolarEdgeAPI('/app/config.json')
 
     rivian_connected = rivian.is_charger_connected()
