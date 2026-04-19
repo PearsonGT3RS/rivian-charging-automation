@@ -18,9 +18,9 @@ class TeslaAPI:
     def __init__(self, config_file=None, session_file=None):
         # --- PATH CONFIGURATION ---
         # Switch these back to absolute /app/ paths before building your Docker image
-        self.config_file = "app/config.json"
-        self.session_file = "app/sessions/tesla-session.json"
-        self.private_key_path = "app/private-key.pem"
+        self.config_file = "/app/config.json"
+        self.session_file = "/app/sessions/tesla-session.json"
+        self.private_key_path = "/app/private-key.pem"
         
         self.client_id = None
         self.client_secret = None
