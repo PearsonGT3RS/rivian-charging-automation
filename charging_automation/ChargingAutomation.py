@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 from datetime import datetime
 from enum import Enum
 from Config import Config
@@ -111,15 +112,37 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
 
 
 def apply_charging(vehicle, target_watts, increment, vehicle_name):
-    """Set charging amps for a vehicle based on target watts, or stop if below minimum."""
+    """Set charging amps and handle Start/Stop via Signed Commands."""
+    now = time.time()
     target_amps = watts_to_amps(target_watts, increment)
     target_amps = min(target_amps, vehicle.AMPS_MAX)
-    logger.info('%s: target %.0fW → %dA', vehicle_name, target_watts, target_amps)
+    
+    # Get current state to avoid redundant commands
+    is_currently_charging = vehicle.is_charging()
+    
+    logger.info('%s: target %.0fW → %dA (Currently Charging: %s)', 
+                vehicle_name, target_watts, target_amps, is_currently_charging)
+
+    # 1. STOP LOGIC: Below minimum and currently charging
     if target_amps < vehicle.AMPS_MIN:
-        logger.info('%s: %dA below min %dA, turning off', vehicle_name, target_amps, vehicle.AMPS_MIN)
-        vehicle.set_schedule_off()
+        if is_currently_charging:
+            # Check Hysteresis: Has it been 5 minutes since the last start/stop?
+            #if (now - last_action_times[vehicle_name]) > MIN_ACTION_INTERVAL:
+            logger.info('%s: Stopping charge (Below min and interval met)', vehicle_name)
+            vehicle.charge_stop() # New Tesla Signed Command
+            last_action_times[vehicle_name] = now
+        return
+
+    # 2. START/UPDATE LOGIC: Above minimum
+    if not is_currently_charging:
+        # Check Hysteresis: Ensure we don't restart too soon after a stop
+        logger.info('%s: Starting charge...', vehicle_name)
+        vehicle.charge_start() # New Tesla Signed Command
+        vehicle.set_charging_amps(target_amps) # Signed Amps
+        last_action_times[vehicle_name] = now
     else:
-        vehicle.set_schedule_amps(target_amps)
+        # Already charging, just update the amperage (no hysteresis needed for amp changes)
+        vehicle.set_charging_amps(target_amps)
 
 
 def run_charging_automation():
