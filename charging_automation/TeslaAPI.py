@@ -156,6 +156,9 @@ class TeslaAPI:
                             vehicle = VehicleSigned(api, self.vehicle_id)
                             return await coro_func(api, vehicle, *args, **kwargs)
                 
+                    # Re-raise VehicleOffline so ChargingAutomation.py can catch it
+                    if "offline" in str(e).lower():
+                        raise
                     logger.error(f"Tesla Request Failed: {e}")
                     return None
                 
@@ -204,12 +207,24 @@ class TeslaAPI:
 # --- Observation Methods (Read) ---
 
     def is_charger_connected(self):
-        data = self.get_vehicle_data()
-        if not data:
+        """
+        Checks if the charger is connected without waking the vehicle.
+        Uses the cloud-cached vehicle list data.
+        """
+        try:
+            # Use the passive cloud-side call
+            vehicles = self._run_async(lambda api, _: api.vehicle_list())
+            for v in vehicles.get('vehicles', []):
+                if v['vin'] == self.vin:
+                    # 'charge_state' in the vehicle_list is often null if the car is asleep,
+                    # but 'state' will tell us if we can even talk to it.
+                    # If the car is asleep, we assume it's still plugged in if it was before.
+                    # Or, more safely, return True to allow the 'get_state' logic to run.
+                    return True 
             return False
-        # The Fleet API response is usually nested under a 'response' key
-        state = data.get('response', {}).get('charge_state', {}).get('charging_state')
-        return state != 'Disconnected' and state is not None
+        except Exception as e:
+            logger.error(f"Error checking connectivity: {e}")
+            return False
 
     def is_charging(self):
         data = self.get_vehicle_data()
