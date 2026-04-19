@@ -120,44 +120,44 @@ class TeslaAPI:
     def _run_async(self, coro_func, *args, **kwargs):
         async def wrapper():
             async with aiohttp.ClientSession() as session:
-            # Initial token check
-            if not self.access_token:
-                if await self._refresh_tokens_async(session):
-                    self.save_session()  # <--- SAVE AFTER INITIAL REFRESH
-                else:
-                    logger.error("Initial token refresh failed.")
-                    return None
-
-            # 1. Parse Key
-            parsed_key = self._get_parsed_key()
-            if not parsed_key: return None
-
-            # 2. Init API and Inject Key
-            api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
-            api.private_key = parsed_key
-
-            # 3. Init Vehicle (VehicleSigned is the wrapper now)
-            vehicle = None
-            if self.vehicle_id:
-                vehicle = VehicleSigned(api, self.vehicle_id)
-
-            try:
-                return await coro_func(api, vehicle, *args, **kwargs)
-            except Exception as e:
-                # Catch 401 Unauthorized errors
-                if "401" in str(e).lower() or "unauthorized" in str(e).lower():
-                    logger.info("401 detected, attempting token refresh...")
+                # Initial token check
+                if not self.access_token:
                     if await self._refresh_tokens_async(session):
-                        self.save_session()  # <--- SAVE AFTER RETRY REFRESH
+                        self.save_session()  # <--- SAVE AFTER INITIAL REFRESH
+                    else:
+                        logger.error("Initial token refresh failed.")
+                        return None
+
+                # 1. Parse Key
+                parsed_key = self._get_parsed_key()
+                if not parsed_key: return None
+
+                # 2. Init API and Inject Key
+                api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
+                api.private_key = parsed_key
+
+                # 3. Init Vehicle (VehicleSigned is the wrapper now)
+                vehicle = None
+                if self.vehicle_id:
+                    vehicle = VehicleSigned(api, self.vehicle_id)
+
+                try:
+                    return await coro_func(api, vehicle, *args, **kwargs)
+                except Exception as e:
+                    # Catch 401 Unauthorized errors
+                    if "401" in str(e).lower() or "unauthorized" in str(e).lower():
+                        logger.info("401 detected, attempting token refresh...")
+                        if await self._refresh_tokens_async(session):
+                            self.save_session()  # <--- SAVE AFTER RETRY REFRESH
                         
-                        # Re-init on retry with new tokens
-                        api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
-                        api.private_key = parsed_key
-                        vehicle = VehicleSigned(api, self.vehicle_id)
-                        return await coro_func(api, vehicle, *args, **kwargs)
+                            # Re-init on retry with new tokens
+                            api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
+                            api.private_key = parsed_key
+                            vehicle = VehicleSigned(api, self.vehicle_id)
+                            return await coro_func(api, vehicle, *args, **kwargs)
                 
-                logger.error(f"Tesla Request Failed: {e}")
-                return None
+                    logger.error(f"Tesla Request Failed: {e}")
+                    return None
                 
         return asyncio.run(wrapper())
 
