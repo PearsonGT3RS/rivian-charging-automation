@@ -23,6 +23,8 @@ class TeslaAPI:
                 session = json.load(f)
                 self.access_token = session.get('access_token')
                 self.vehicle_id = session.get('vehicle_id')
+                logger.info("vehicle id")
+                logger.info("session token")
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning("No valid session file found")
             
@@ -50,6 +52,7 @@ class TeslaAPI:
             
     def get_vehicle_data(self):
         if not self.vehicle_id:
+            logger.info("trying to get vehicle data using %d%%", self.vehicle_id)
             return None
         endpoint = f"/api/1/vehicles/{self.vehicle_id}/vehicle_data"
         return self._api_request('GET', endpoint)
@@ -63,6 +66,7 @@ class TeslaAPI:
     def is_charger_connected(self):
         data = self.get_vehicle_data()
         if not data:
+            logger.info("getting vehicle data failed")
             return False
         return data.get('response', {}).get('charge_state', {}).get('charging_state') != 'Disconnected'
         

@@ -7,242 +7,218 @@ from RivianAPI import RivianAPI
 from TeslaAPI import TeslaAPI
 from SolarEdgeAPI import SolarEdgeAPI
 
-import json
-
 logger = logging.getLogger(__name__)
 
+SOC_THRESHOLD = 50           # % state of charge threshold for allocation rules
+VOLTS = 240                  # nominal charging voltage
+CHANGE_THRESHOLD_WATTS = 500 # ignore fluctuations smaller than ~2A Rivian step
+RIVIAN_MIN_WATTS = RivianAPI.AMPS_MIN * VOLTS  # 8A * 240V = 1920W
+TESLA_MIN_WATTS = TeslaAPI.AMPS_MIN * VOLTS    # 5A * 240V = 1200W
+
+
 class AutomationMode(Enum):
-    OFF = 0  # charging automation off
-    DEFAULT = 1  # using excess solar during the day, charging at full speed at night (up to a limit)
-    SOLAR_ONLY = 2  # only using excess solar, not charging at night
+    OFF = 0          # automation disabled
+    DEFAULT = 1      # solar during day, charge to limit at night
+    SOLAR_ONLY = 2   # solar only, no night charging
 
 
 def is_night_time(config):
     current_hour = datetime.now().hour
-    logger.info('Start Night: {} ; End Night: {}'.format(config.night_time_start, config.night_time_end))
+    logger.info('Start Night: %d ; End Night: %d', config.night_time_start, config.night_time_end)
     return current_hour < config.night_time_end or current_hour >= config.night_time_start
 
 
-def calculate_delta_amp(grid_consumption, vehicle_type):
-    """Calculate amp adjustment based on grid consumption and vehicle type
-    Args:
-        grid_consumption: Current grid power flow (positive = importing)
-        vehicle_type: Either 'tesla' or 'rivian' to determine amp increment
-    Returns:
-        Suggested amp adjustment (negative to reduce consumption)
-    """
-    # Tesla supports 1A increments, Rivian requires 2A
-    increment = 1 if vehicle_type == 'tesla' else 2
-    
-    # Calculate base amp change needed (Watt / 240V)
-    base_amps = grid_consumption / 240
-
-    logger.info(f"Grid Consumption value: {grid_consumption}")
-
-    # Round to nearest increment in the direction that reduces grid consumption
-    # For positive grid (importing), we want to round up the negative adjustment
-    # For negative grid (exporting), we want to round down the negative adjustment
-    if grid_consumption > 0:
-        delta_amp = math.ceil(abs(base_amps) / increment) * increment
-    else:
-        delta_amp = -math.floor(abs(base_amps) / increment) * increment
-       
-    logger.info(f"Delta Amp Calc: {delta_amp}")
- 
-    return delta_amp
-
-
-def is_delta_amp_too_small(delta_amp):
-    return -3 < delta_amp < 3
-
-
 def get_automation_mode(hubitat):
-    # If not using Hubitat, hardcode the automation mode
     if not hubitat:
-        return AutomationMode.SOLAR_ONLY
-
-    automation_on = hubitat.is_automation_on()
-    night_charging = hubitat.is_night_charging_on()
-    if not automation_on:
+        return AutomationMode.DEFAULT
+    if not hubitat.is_automation_on():
         return AutomationMode.OFF
-    return AutomationMode.DEFAULT if night_charging else AutomationMode.SOLAR_ONLY
+    return AutomationMode.DEFAULT if hubitat.is_night_charging_on() else AutomationMode.SOLAR_ONLY
 
 
 def get_night_charging_limit(hubitat):
-    # If not using Hubitat, hardcode 50%
     if not hubitat:
         return 50
-
-    limit = hubitat.get_night_charging_limit()
-    return limit
+    return hubitat.get_night_charging_limit()
 
 
-def allocate_power(vehicles, available_power):
-    """Allocate available power to vehicles based on state of charge"""
-    # Sort vehicles by state of charge (lowest first)
-    sorted_vehicles = sorted(vehicles, key=lambda v: v.get_battery_level())
-    
-    total_allocated = 0
-    allocations = []
-    
-    for vehicle in sorted_vehicles:
-        if not vehicle.is_charger_connected():
-            allocations.append(0)
-            continue
-            
-        # Calculate fair share based on remaining vehicles
-        remaining_power = available_power - total_allocated
-        remaining_vehicles = len(sorted_vehicles) - len(allocations)
-        fair_share = remaining_power / remaining_vehicles
-        
-        # Calculate max possible for this vehicle
-        max_possible = min(
-            fair_share * 2,  # Bias toward lower SOC vehicles
-            vehicle.AMPS_MAX * 240,  # Convert to watts
-            remaining_power
-        )
-        
-        allocation = max(0, max_possible)
-        allocations.append(allocation)
-        total_allocated += allocation
-    
-    return allocations
+def watts_to_amps(watts, increment):
+    """Convert watts to amps, rounding DOWN to the nearest valid increment to avoid grid draw."""
+    return math.floor((watts / VOLTS) / increment) * increment
+
+
+def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, tesla_connected):
+    """
+    Split available solar watts between vehicles using SOC-based rules.
+
+    Rules:
+      1. Never draw from grid; never export more than necessary.
+      2. Both vehicles < 50% SOC: 50/50 split.
+      3. One vehicle > 50% SOC: 75% to lower-SOC vehicle, 25% to higher.
+      4. Both vehicles > 50% SOC and no solar surplus: stop charging.
+
+    If a vehicle's allocated share is below its hardware minimum, those
+    watts are reassigned to the other vehicle to maximize solar use.
+
+    Returns (rivian_watts, tesla_watts).
+    """
+    total = max(0.0, solar_for_ev)
+
+    if not rivian_connected and not tesla_connected:
+        return 0.0, 0.0
+
+    # Single vehicle: all available solar goes to it
+    if rivian_connected and not tesla_connected:
+        if rivian_soc > SOC_THRESHOLD and solar_for_ev <= 0:
+            return 0.0, 0.0
+        return total, 0.0
+
+    if tesla_connected and not rivian_connected:
+        if tesla_soc > SOC_THRESHOLD and solar_for_ev <= 0:
+            return 0.0, 0.0
+        return 0.0, total
+
+    # Both connected — Rule 4: stop if both adequately charged and no surplus
+    if rivian_soc > SOC_THRESHOLD and tesla_soc > SOC_THRESHOLD and solar_for_ev <= 0:
+        return 0.0, 0.0
+
+    if total == 0:
+        return 0.0, 0.0
+
+    # Determine split ratio by SOC
+    if rivian_soc <= SOC_THRESHOLD and tesla_soc <= SOC_THRESHOLD:
+        rivian_ratio, tesla_ratio = 0.5, 0.5        # Rule 2: even split
+    elif rivian_soc <= tesla_soc:
+        rivian_ratio, tesla_ratio = 0.75, 0.25      # Rule 3: Rivian has lower SOC
+    else:
+        rivian_ratio, tesla_ratio = 0.25, 0.75      # Rule 3: Tesla has lower SOC
+
+    rivian_w = total * rivian_ratio
+    tesla_w = total * tesla_ratio
+
+    # If a vehicle's share is below its minimum charging power, reassign to the other
+    rivian_usable = rivian_w >= RIVIAN_MIN_WATTS
+    tesla_usable = tesla_w >= TESLA_MIN_WATTS
+
+    if not rivian_usable and not tesla_usable:
+        return 0.0, 0.0
+    if not rivian_usable:
+        return 0.0, min(total, TeslaAPI.AMPS_MAX * VOLTS)
+    if not tesla_usable:
+        return min(total, RivianAPI.AMPS_MAX * VOLTS), 0.0
+
+    return rivian_w, tesla_w
+
+
+def apply_charging(vehicle, target_watts, increment, vehicle_name):
+    """Set charging amps for a vehicle based on target watts, or stop if below minimum."""
+    target_amps = watts_to_amps(target_watts, increment)
+    target_amps = min(target_amps, vehicle.AMPS_MAX)
+    logger.info('%s: target %.0fW → %dA', vehicle_name, target_watts, target_amps)
+    if target_amps < vehicle.AMPS_MIN:
+        logger.info('%s: %dA below min %dA, turning off', vehicle_name, target_amps, vehicle.AMPS_MIN)
+        vehicle.set_schedule_off()
+    else:
+        vehicle.set_schedule_amps(target_amps)
+
 
 def run_charging_automation():
     logger.info('Running charging automation cycle...')
 
-    #hubitat = HubitatAPI('hubitat-config.json')
-    # If not using Hubitat replace with the line below
-    hubitat = None
+    hubitat = None  # Replace with HubitatAPI('hubitat-config.json') to enable
 
-    logger.info('Reading config from Hubitat...')
     mode = get_automation_mode(hubitat)
+    logger.info('Automation mode: %s', mode)
 
-    logger.info('Automation mode: {}'.format(mode))
-
-    # Check automation is ON
     if mode == AutomationMode.OFF:
         logger.info('Automation is OFF')
         return
 
     config = Config('config.json')
-    rivian = RivianAPI(config, 'rivian-session.json')    
-    solaredge = SolarEdgeAPI('config.json')
+    rivian = RivianAPI(config, 'rivian-session.json')
     tesla = TeslaAPI('config.json', 'tesla-session.json')
+    solaredge = SolarEdgeAPI('config.json')
 
-    vehicles = [rivian, tesla]
+    rivian_connected = rivian.is_charger_connected()
+    tesla_connected = tesla.is_charger_connected()
+    logger.info('Rivian connected: %s  Tesla connected: %s', rivian_connected, tesla_connected)
 
-    # Check if any chargers are plugged in
-    if not any(v.is_charger_connected() for v in vehicles):
+    if not rivian_connected and not tesla_connected:
         logger.info('No chargers plugged in')
-        for vehicle in vehicles:
-            vehicle.set_schedule_off()
         if hubitat:
             hubitat.set_info_message('Charging: not plugged in', 0, 0)
         return
 
-    # Check night time
+    # Night time handling
     if is_night_time(config):
-        charging = False
         if mode == AutomationMode.SOLAR_ONLY:
-            logger.info('Mode == Solar-only: Disabling charging at night')
-            rivian.set_schedule_off()
-            current_amp = 0
+            logger.info('Solar-only: disabling all charging at night')
+            if rivian_connected:
+                rivian.set_schedule_off()
+            if tesla_connected:
+                tesla.set_schedule_off()
             if hubitat:
                 hubitat.set_info_message('Charging: disabled (night off)', 0, 0)
-        if mode == AutomationMode.DEFAULT:
-            # In default mode, charge to a certain % at night
+        elif mode == AutomationMode.DEFAULT:
             charging_limit = get_night_charging_limit(hubitat)
-            ev_battery_level = rivian.get_battery_level()
-            if ev_battery_level < charging_limit:
-                logger.info('Mode == Default: Charging to {}% at night (now at {}%)'.format(
-                    charging_limit, round(ev_battery_level)))
-                rivian.set_schedule_default()
-                charging = True
-                if hubitat:
-                    hubitat.set_info_message('Charging: enabled (night)', RivianAPI.AMPS_MAX, 0)
-            else:
-                logger.info('Mode == Default: Charged to {}% at night (already at {}%)'.format(
-                    charging_limit, round(ev_battery_level)))
-                rivian.set_schedule_off()
-                current_amp = 0
-                if hubitat:
-                    hubitat.set_info_message('Charging: disabled (night full)', 0, 0)
+            for vehicle, name in [(rivian, 'Rivian'), (tesla, 'Tesla')]:
+                connected = rivian_connected if vehicle is rivian else tesla_connected
+                if not connected:
+                    continue
+                soc = vehicle.get_battery_level()
+                if soc < charging_limit:
+                    logger.info('%s: charging to %d%% at night (now %d%%)', name, charging_limit, round(soc))
+                    vehicle.set_schedule_default()
+                else:
+                    logger.info('%s: at %d%%, turning off at night', name, round(soc))
+                    vehicle.set_schedule_off()
         return
-        #Short-circuit if already charging
-        if charging:
-            return
 
-    # Read production data from SolarEdge
+    # Daytime solar charging
     power_flow = solaredge.get_current_power_flow()
     if power_flow is None:
         logger.error('Failed to get power flow data')
         return
-        
-    # Calculate available power (negative grid means excess power)
-    available_power = -power_flow.grid
-    logger.info("AP: %d", available_power)
-    
-    # Get current charging power
-    current_power = sum(
-        v.get_current_schedule_amp() * 240 if v.is_charging() else 0 
-        for v in vehicles
-    )
-    logger.info(f'Current charging power: {current_power}W')    
-    # Calculate power adjustment needed
-    power_delta = available_power - current_power
-    logger.info(f'Available power: {available_power}W ; Current power: {current_power}W ; Delta: {power_delta}W')
 
-    if abs(power_delta) < 500:  # 2A * 240V = 500W threshold
-        logger.info('Small or no change. Ignoring')
+    # available_power: positive = exporting surplus, negative = importing from grid
+    available_power = -power_flow.grid
+    logger.info('PV=%.0fW  Load=%.0fW  Grid=%.0fW  Available=%.0fW',
+                power_flow.pv, power_flow.load, power_flow.grid, available_power)
+
+    # Watts currently consumed by actively charging vehicles
+    current_power = 0.0
+    if rivian_connected and rivian.is_charging():
+        current_power += rivian.get_current_schedule_amp() * VOLTS
+    if tesla_connected and tesla.is_charging():
+        current_power += tesla.get_current_schedule_amp() * VOLTS
+    logger.info('Current EV charging: %.0fW', current_power)
+
+    # Solar energy available for EVs = what they draw now + any surplus (or minus deficit)
+    solar_for_ev = current_power + available_power
+    logger.info('Solar for EVs: %.0fW', solar_for_ev)
+
+    # Use 100% SOC for disconnected vehicles so they're treated as "over threshold"
+    rivian_soc = rivian.get_battery_level() if rivian_connected else 100
+    tesla_soc = tesla.get_battery_level() if tesla_connected else 100
+    logger.info('Rivian SOC: %d%%  Tesla SOC: %d%%', rivian_soc, tesla_soc)
+
+    # Rule 4: must stop immediately if both vehicles are adequately charged and no surplus
+    both_over = rivian_soc > SOC_THRESHOLD and tesla_soc > SOC_THRESHOLD
+    must_stop = both_over and solar_for_ev <= 0
+
+    # Skip insignificant power fluctuations unless a forced stop is required
+    if not must_stop and abs(available_power) < CHANGE_THRESHOLD_WATTS:
+        logger.info('Power change %.0fW below threshold, skipping update', available_power)
         return
 
-    # Allocate power to vehicles
-    #power_allocations = allocate_power(vehicles, available_power)
-    
-    # Apply allocations with vehicle-specific increments
-    total_amps = 0
-    #for vehicle, allocation in zip(vehicles, power_allocations):
-    #vehicle_type = 'tesla' if isinstance(vehicle, TeslaAPI) else 'rivian'
-    vehicle = rivian
-    vehicle_type = 'rivian'
+    rivian_w, tesla_w = allocate_solar_watts(
+        solar_for_ev, rivian_soc, tesla_soc, rivian_connected, tesla_connected
+    )
+    logger.info('Allocated: Rivian=%.0fW  Tesla=%.0fW', rivian_w, tesla_w)
 
-    logger.info("vehicle_type %s", vehicle_type) 
-    base_amps = power_delta / 240
-
-    delta_amps = calculate_delta_amp(power_delta, vehicle_type)  # Convert back to grid consumption style
-    #delta_amps = max(vehicle.AMPS_MIN, min(delta_amps, vehicle.AMPS_MAX))  # Clamp to vehicle limits
-
-    logger.info(f"Base Amps: {base_amps}; Power Delta {power_delta}; Amps before function call: {delta_amps}")
-    
-    logger.info("Min Amps: %s", vehicle.AMPS_MIN)
-    logger.info("Max Amps: %s", vehicle.AMPS_MAX)
-    logger.info("delta_amps: %d", delta_amps)
-
-    #if delta_amps <= 0:
-    #    vehicle.set_schedule_off()
-    #else:
-    #    vehicle.set_schedule_amps(delta_amps)
-    #    logger.info("New Amps: {delta_amps}")
-    #total_amps += delta_amps
-   
-
-    new_amp = (current_power / 240) + delta_amps
-    if new_amp > RivianAPI.AMPS_MAX:
-        new_amp = RivianAPI.AMPS_MAX
-    if new_amp < RivianAPI.AMPS_MIN:
-        new_amp = 0 
-    
-    if new_amp == 0:
-        rivian.set_schedule_off()
-    	# Update Hubitat display
-        if hubitat:
-            hubitat.set_info_message('Charging: disabled', new_amp, grid_consumption)
-    else:
-        rivian.set_schedule_amps(new_amp)
-        if hubitat:
-            hubitat.set_info_message('Charging: enabled', new_amp, grid_consumption)
+    if rivian_connected:
+        apply_charging(rivian, rivian_w, 2, 'Rivian')
+    if tesla_connected:
+        apply_charging(tesla, tesla_w, 1, 'Tesla')
 
     logger.info('Automation cycle complete')
-    logger.info(f"Final values:  New Amp: {new_amp}; Delta Amps:  {delta_amps}, Current Amps: {(current_power / 240)}")
-
