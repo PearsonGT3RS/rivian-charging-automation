@@ -148,17 +148,26 @@ class TeslaAPI:
 
     def wake_up(self):
         """Wakes the vehicle safely, skipping the delay if already awake."""
-        # 1. Check if the telemetry computer is already online
-        if self.get_vehicle_data():
-            logger.info("Tesla is already awake. Skipping wake delay.")
+        import time # Standard synchronous sleep
+        
+        # 1. Safer check: If battery level is > 0, we KNOW it's awake and talking
+        if self.get_battery_level() > 0:
+            logger.info("Tesla is already awake and talking. Skipping wake delay.")
             return True
 
-        # 2. If asleep, send the command and wait for Highland stabilization
+        # 2. If asleep, send the wake command via the async bridge
         logger.info("Sending Tesla wake command...")
-        result = self._run_async(lambda _, v: v.wake_up())
         
-        logger.info("Waiting 20 seconds for Highland telemetry to stabilize...")
-        time.sleep(20)
+        async def _wake(api, vehicle):
+            return await vehicle.wake_up()
+            
+        result = self._run_async(_wake)
+        
+        # 3. The Physical Block
+        # Because this is a standard 'time.sleep', the entire Python script 
+        # MUST halt here for 30 seconds. It cannot skip past it.
+        logger.info("Waiting 30 seconds for Highland telemetry to boot...")
+        time.sleep(30)
         
         return result
 
