@@ -205,7 +205,7 @@ def run_charging_automation():
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
                     soc = vehicle.get_battery_level() # returns 0 if asleep
-                    if soc:
+                    if soc == 0: # <--- CRITICAL FIX: Changed from 'if soc:' to 'if soc == 0:'
                         logger.info('Tesla is asleep. Waking for night SOC check...')
                         vehicle.wake_up()
                         soc = vehicle.get_battery_level() or 0
