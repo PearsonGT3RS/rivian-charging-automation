@@ -212,19 +212,25 @@ class TeslaAPI:
         Uses the cloud-cached vehicle list data.
         """
         try:
-            # Use the passive cloud-side call
-            vehicles = self._run_async(lambda api, _: api.vehicle_list())
-            for v in vehicles.get('vehicles', []):
-                if v['vin'] == self.vin:
-                    # 'charge_state' in the vehicle_list is often null if the car is asleep,
-                    # but 'state' will tell us if we can even talk to it.
-                    # If the car is asleep, we assume it's still plugged in if it was before.
-                    # Or, more safely, return True to allow the 'get_state' logic to run.
+            # Correct library attribute: api.vehicles.list()
+            result = self._run_async(lambda api, _: api.vehicles.list())
+        
+            if result is None:
+                logger.warning("Tesla API returned None for vehicle list. Defaulting to connected.")
+                return True
+
+            vehicles_data = result.get('vehicles', [])
+            for v in vehicles_data:
+                # Match against the ID you use for VehicleSigned (likely your VIN)
+                # We check both 'vin' and 'id_s' to be safe
+                if v.get('vin') == self.vehicle_id or v.get('id_s') == self.vehicle_id:
                     return True 
+        
+            logger.warning(f"Vehicle {self.vehicle_id} not found in account vehicle list.")
             return False
         except Exception as e:
-            logger.error(f"Error checking connectivity: {e}")
-            return False
+            logger.error(f"Passive connectivity check failed: {e}. Fail-safe to True.")
+            return True
 
     def is_charging(self):
         data = self.get_vehicle_data()
