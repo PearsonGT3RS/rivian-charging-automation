@@ -57,6 +57,7 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
       2. Both vehicles < 50% SOC: 50/50 split.
       3. One vehicle > 50% SOC: 75% to lower-SOC vehicle, 25% to higher.
       4. Both vehicles > 50% SOC and no solar surplus: stop charging.
+      5. Any vehicle at 100% SOC (or presumed 100% while asleep) gets 0% allocation.
 
     If a vehicle's allocated share is below its hardware minimum, those
     watts are reassigned to the other vehicle to maximize solar use.
@@ -87,7 +88,14 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
         return 0.0, 0.0
 
     # Determine split ratio by SOC
-    if rivian_soc <= SOC_THRESHOLD and tesla_soc <= SOC_THRESHOLD:
+    # Rule 5: A full (or asleep) vehicle gets 0% of the split
+    if rivian_soc >= 100 and tesla_soc >= 100:
+        return 0.0, 0.0
+    elif rivian_soc >= 100:
+        rivian_ratio, tesla_ratio = 0.0, 1.0
+    elif tesla_soc >= 100:
+        rivian_ratio, tesla_ratio = 1.0, 0.0
+    elif rivian_soc <= SOC_THRESHOLD and tesla_soc <= SOC_THRESHOLD:
         rivian_ratio, tesla_ratio = 0.5, 0.5        # Rule 2: even split
     elif rivian_soc <= tesla_soc:
         rivian_ratio, tesla_ratio = 0.75, 0.25      # Rule 3: Rivian has lower SOC
@@ -205,7 +213,7 @@ def run_charging_automation():
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
                     soc = vehicle.get_battery_level() # returns 0 if asleep
-                    if soc == 0: # <--- CRITICAL FIX: Changed from 'if soc:' to 'if soc == 0:'
+                    if soc == 0: 
                         logger.info('Tesla is asleep. Waking for night SOC check...')
                         vehicle.wake_up()
                         soc = vehicle.get_battery_level() or 0
@@ -305,5 +313,3 @@ def run_charging_automation():
         apply_charging(tesla, tesla_w, 1, 'Tesla')
 
     logger.info('Automation cycle complete')
-
-
