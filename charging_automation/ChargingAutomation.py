@@ -213,10 +213,15 @@ def run_charging_automation():
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
                     soc = vehicle.get_battery_level() # returns 0 if asleep
-                    if soc == 0: 
+                    if soc == 0: # <--- LOGIC INVERSION FIXED
                         logger.info('Tesla is asleep. Waking for night SOC check...')
                         vehicle.wake_up()
                         soc = vehicle.get_battery_level() or 0
+                        
+                        # Re-verify connection now that telemetry is online
+                        if not vehicle.is_charger_connected():
+                            logger.info('Tesla woke up but is disconnected. Skipping night charge.')
+                            continue
 
                 if soc < charging_limit:
                     logger.info('%s: below limit (%d%% < %d%%). Starting night charge.', name, round(soc), charging_limit)
@@ -261,6 +266,12 @@ def run_charging_automation():
                 logger.info('Surplus > %dW. Waking Tesla for SOC check...', TESLA_MIN_WATTS)
                 tesla.wake_up()
                 tesla_soc = tesla.get_battery_level() or 100
+                
+                # Re-verify connection now that telemetry is online
+                if not tesla.is_charger_connected():
+                    logger.info('Tesla woke up but is disconnected. Re-allocating solar.')
+                    tesla_connected = False
+                    tesla_soc = 100
             else:
                 logger.info('Tesla is asleep and no surplus available. Let it sleep.')
                 tesla_soc = 100  # Treat as full so Rule 4 doesn't trigger
@@ -273,6 +284,18 @@ def run_charging_automation():
     rivian_soc = 100
     if rivian_connected:
         rivian_soc = rivian.get_battery_level() or 100
+        
+        # --- FIX: GHOST RIVIAN & VEHICLE LIMIT DETECTION ---
+        # If the API caches 'connected', but it refuses to draw power 
+        # (unplugged or hit internal vehicle limit), safely bypass it.
+        try:
+            # We use get_current_schedule_amp() > 0 to know we tried to charge it
+            if not rivian.is_charging() and rivian.get_current_schedule_amp() > 0:
+                logger.info('Rivian has a schedule but is drawing 0W (Ghost Car). Marking as disconnected.')
+                rivian_connected = False
+                rivian_soc = 100
+        except Exception:
+            pass
 
     logger.info('Rivian SOC: %d%%  Tesla SOC: %d%%', rivian_soc, tesla_soc)
 
