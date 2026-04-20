@@ -167,6 +167,7 @@ def run_charging_automation():
         logger.info('Automation is OFF')
         return
     
+    soc = 0
     config = Config('/app/config.json')
     rivian = RivianAPI(config, '/sessions/rivian-session.json')
     tesla = TeslaAPI('/app/config.json', '/sessions/tesla-session.json')
