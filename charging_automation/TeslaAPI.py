@@ -16,7 +16,6 @@ class TeslaAPI:
     AMPS_MAX = 48
     
     def __init__(self, config_file="/app/config.json", session_file="/sessions/tesla-session.json"):
-        # Reverted to your exact paths as requested
         self.config_file = config_file
         self.session_file = session_file
         self.private_key_path = "/app/private-key.pem"
@@ -94,12 +93,10 @@ class TeslaAPI:
                     return await coro_func(api, vehicle, *args, **kwargs)
                     
                 except VehicleOffline:
-                    # PROPER FIX: Explicitly catch the offline exception class
                     logger.debug("Tesla is asleep. Safely returning None.")
                     return None
                     
                 except Exception as e:
-                    # Handle token expirations safely
                     if "401" in str(e).lower() or "unauthorized" in str(e).lower():
                         if await self._refresh_tokens_async(session):
                             api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
@@ -134,28 +131,18 @@ class TeslaAPI:
     # --- Commands (Synchronous Public Methods) ---
 
     def is_charger_connected(self):
-        """
-        Fail-Open logic. If get_vehicle_data returns None, the car is asleep. 
-        We assume it is connected in the lab so the automation doesn't skip it.
-        """
         data = self.get_vehicle_data()
         if not data:
             return True
-            
-        # Standard check to see if the cable is physically disconnected
         state = data.get('response', {}).get('charge_state', {}).get('charging_state')
         return state != 'Disconnected'
 
     def wake_up(self):
         """Wakes the vehicle safely, skipping the delay if already awake."""
-        import time # Standard synchronous sleep
-        
-        # 1. Safer check: If battery level is > 0, we KNOW it's awake and talking
         if self.get_battery_level() > 0:
             logger.info("Tesla is already awake and talking. Skipping wake delay.")
             return True
 
-        # 2. If asleep, send the wake command via the async bridge
         logger.info("Sending Tesla wake command...")
         
         async def _wake(api, vehicle):
@@ -163,19 +150,16 @@ class TeslaAPI:
             
         result = self._run_async(_wake)
         
-        # 3. The Physical Block
-        # Because this is a standard 'time.sleep', the entire Python script 
-        # MUST halt here for 30 seconds. It cannot skip past it.
         logger.info("Waiting 30 seconds for Highland telemetry to boot...")
         time.sleep(30)
         
         return result
 
     def get_vehicle_data(self):
-        return self._run_async(lambda _, v: v.vehicle_data())
+        async def _get(api, vehicle): return await vehicle.vehicle_data()
+        return self._run_async(_get)
 
     def get_battery_level(self):
-        """Returns 0 if the car is asleep/offline."""
         data = self.get_vehicle_data()
         if not data:
             return 0 
@@ -189,14 +173,17 @@ class TeslaAPI:
         return state == 'Charging'
 
     def charge_start(self):
-        return self._run_async(lambda _, v: v.charge_start())
+        async def _start(api, vehicle): return await vehicle.charge_start()
+        return self._run_async(_start)
 
     def charge_stop(self):
-        return self._run_async(lambda _, v: v.charge_stop())
+        async def _stop(api, vehicle): return await vehicle.charge_stop()
+        return self._run_async(_stop)
 
     def set_charging_amps(self, amps):
         amps = max(self.AMPS_MIN, min(amps, self.AMPS_MAX))
-        return self._run_async(lambda _, v: v.set_charging_amps(amps))
+        async def _set(api, vehicle): return await vehicle.set_charging_amps(amps)
+        return self._run_async(_set)
 
     def get_current_schedule_amp(self):
         data = self.get_vehicle_data()
