@@ -76,7 +76,7 @@ class TeslaAPI:
             return None
 
     def _run_async(self, coro_func, *args, **kwargs):
-        """Synchronous bridge to execute async API calls without unawaited coroutine warnings."""
+        """Bridge between sync main loop and async library."""
         async def wrapper():
             async with aiohttp.ClientSession() as session:
                 if not self.access_token:
@@ -99,8 +99,12 @@ class TeslaAPI:
                             vehicle = VehicleSigned(api, self.vehicle_id)
                             return await coro_func(api, vehicle, *args, **kwargs)
                     
+                    # THE PROPER FIX: Catch the offline error and return None silently.
+                    # Do not 'raise' it to crash the script.
                     if "offline" in str(e).lower():
-                        raise
+                        logger.debug("Tesla is asleep/offline.")
+                        return None
+                        
                     logger.error(f"Tesla Request Failed: {e}")
                     return None
         return asyncio.run(wrapper())
@@ -126,69 +130,67 @@ class TeslaAPI:
 
     # --- Commands (Synchronous Public Methods) ---
 
-    def get_state(self):
-        """Passive check of vehicle state using singular vehicle namespace."""
-        try:
-            # Correcting attribute to api.vehicle.list() for your library version
-            result = self._run_async(lambda api, _: api.vehicle.list())
-            if result and 'response' in result:
-                for v in result['response']:
-                    if v.get('vin') == self.vehicle_id or v.get('id_s') == self.vehicle_id:
-                        return v.get('state', 'unknown')
-            return "unknown"
-        except Exception as e:
-            logger.error(f"Passive state check failed: {e}")
-            return "offline"
-
     def is_charger_connected(self):
-        state = self.get_state()
-        return state != "offline"
+        """
+        Fail-Open logic. If get_vehicle_data returns None, the car is asleep. 
+        We assume it is connected in the lab so the automation doesn't skip it.
+        """
+        data = self.get_vehicle_data()
+        if not data:
+            return True
+            
+        # Standard check to see if the cable is physically disconnected
+        state = data.get('response', {}).get('charge_state', {}).get('charging_state')
+        return state != 'Disconnected'
 
     def wake_up(self):
-        """Wake up vehicle and wait for Highland telemetry to boot."""
+        """Wakes the vehicle safely, skipping the delay if already awake."""
+        # 1. Check if the telemetry computer is already online
+        if self.get_vehicle_data():
+            logger.info("Tesla is already awake. Skipping wake delay.")
+            return True
+
+        # 2. If asleep, send the command and wait for Highland stabilization
         logger.info("Sending Tesla wake command...")
         result = self._run_async(lambda _, v: v.wake_up())
-        logger.info("Waiting 20 seconds for Highland telemetry stabilization...")
+        
+        logger.info("Waiting 20 seconds for Highland telemetry to stabilize...")
         time.sleep(20)
+        
         return result
 
     def get_vehicle_data(self):
         return self._run_async(lambda _, v: v.vehicle_data())
 
+    def get_battery_level(self):
+        """Returns 0 if the car is asleep/offline."""
+        data = self.get_vehicle_data()
+        if not data:
+            return 0 
+        return data.get('response', {}).get('charge_state', {}).get('battery_level', 0)
+
+    def is_charging(self):
+        data = self.get_vehicle_data()
+        if not data:
+            return False
+        state = data.get('response', {}).get('charge_state', {}).get('charging_state')
+        return state == 'Charging'
+
     def charge_start(self):
-        """Bridged Signed Start."""
         return self._run_async(lambda _, v: v.charge_start())
 
     def charge_stop(self):
-        """Bridged Signed Stop."""
         return self._run_async(lambda _, v: v.charge_stop())
 
     def set_charging_amps(self, amps):
-        """Bridged Signed Amps."""
         amps = max(self.AMPS_MIN, min(amps, self.AMPS_MAX))
         return self._run_async(lambda _, v: v.set_charging_amps(amps))
 
-    def is_charging(self):
-        try:
-            data = self.get_vehicle_data()
-            state = data.get('response', {}).get('charge_state', {}).get('charging_state')
-            return state == 'Charging'
-        except Exception:
-            return False
-
-    def get_battery_level(self):
-        try:
-            data = self.get_vehicle_data()
-            return data.get('response', {}).get('charge_state', {}).get('battery_level', 0)
-        except Exception:
-            return 0
-
     def get_current_schedule_amp(self):
-        try:
-            data = self.get_vehicle_data()
-            return data.get('response', {}).get('charge_state', {}).get('charge_amps', 0)
-        except Exception:
+        data = self.get_vehicle_data()
+        if not data:
             return 0
+        return data.get('response', {}).get('charge_state', {}).get('charge_amps', 0)
 
     # --- Compatibility Aliases ---
     def set_schedule_amps(self, amps): return self.set_charging_amps(amps)

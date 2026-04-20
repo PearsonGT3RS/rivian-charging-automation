@@ -203,12 +203,12 @@ def run_charging_automation():
                 
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
-                    state = tesla.get_state()
-                    if state != "online":
-                        logger.info('Tesla is %s. Waking for night SOC check...', state)
-                        tesla.wake_up()
-                
-                soc = vehicle.get_battery_level() or 0
+                    soc = vehicle.get_battery_level() # returns 0 if asleep
+                    if soc:
+                        logger.info('Tesla is asleep. Waking for night SOC check...')
+                        vehicle.wake_up()
+                        soc = vehicle.get_battery_level() or 0
+
                 if soc < charging_limit:
                     logger.info('%s: below limit (%d%% < %d%%). Starting night charge.', name, round(soc), charging_limit)
                     if name == "Tesla":
@@ -243,19 +243,20 @@ def run_charging_automation():
     tesla_soc = 100 # Default to "Full" to prevent accidental draw
     if tesla_connected:
         # Passive check of cloud state (doesn't wake car)
-        tesla_state = tesla.get_state() 
-        logger.info('Tesla state: %s', tesla_state)
+        soc = tesla.get_battery_level() # returns 0 if asleep
+        
 
-        if tesla_state == "online":
-            tesla_soc = tesla.get_battery_level() or 100
-        elif available_power > TESLA_MIN_WATTS:
+        if soc == 0:
+            if available_power > TESLA_MIN_WATTS:
             # Only wake the Highland if we have enough surplus to start charging
-            logger.info('Surplus > %dW. Waking Tesla for SOC check...', TESLA_MIN_WATTS)
-            tesla.wake_up()
-            tesla_soc = tesla.get_battery_level() or 100
+                logger.info('Surplus > %dW. Waking Tesla for SOC check...', TESLA_MIN_WATTS)
+                tesla.wake_up()
+                tesla_soc = tesla.get_battery_level() or 100
+            else:
+                logger.info('Tesla is asleep and no surplus available. Let it sleep.')
+                tesla_soc = 100  # Treat as full so Rule 4 doesn't trigger
         else:
-            logger.info('Tesla is %s and no surplus available. Skipping SOC poll.', tesla_state)
-            tesla_soc = 100 
+            tesla_soc = soc
     # End if tesla_connected
 
     # 3. Determine SOC (Integrating your Disconnected = 100% logic)
