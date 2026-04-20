@@ -4,6 +4,7 @@ import asyncio
 import aiohttp
 import time
 from tesla_fleet_api import TeslaFleetApi
+from tesla_fleet_api.exceptions import VehicleOffline
 from tesla_fleet_api.tesla.vehicle.signed import VehicleSigned
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
@@ -91,22 +92,24 @@ class TeslaAPI:
 
                 try:
                     return await coro_func(api, vehicle, *args, **kwargs)
+                    
+                except VehicleOffline:
+                    # PROPER FIX: Explicitly catch the offline exception class
+                    logger.debug("Tesla is asleep. Safely returning None.")
+                    return None
+                    
                 except Exception as e:
+                    # Handle token expirations safely
                     if "401" in str(e).lower() or "unauthorized" in str(e).lower():
                         if await self._refresh_tokens_async(session):
                             api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
                             api.private_key = parsed_key
                             vehicle = VehicleSigned(api, self.vehicle_id)
                             return await coro_func(api, vehicle, *args, **kwargs)
-                    
-                    # THE PROPER FIX: Catch the offline error and return None silently.
-                    # Do not 'raise' it to crash the script.
-                    if "offline" in str(e).lower():
-                        logger.debug("Tesla is asleep/offline.")
-                        return None
-                        
+                            
                     logger.error(f"Tesla Request Failed: {e}")
                     return None
+                    
         return asyncio.run(wrapper())
 
     async def _refresh_tokens_async(self, session):
