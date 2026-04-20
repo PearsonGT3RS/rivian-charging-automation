@@ -2,10 +2,9 @@ import logging
 import json
 import asyncio
 import aiohttp
+import time
 from tesla_fleet_api import TeslaFleetApi
 from tesla_fleet_api.tesla.vehicle.signed import VehicleSigned
-
-# Cryptography imports for the formal handshake
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
@@ -15,11 +14,10 @@ class TeslaAPI:
     AMPS_MIN = 5
     AMPS_MAX = 48
     
-    def __init__(self, config_file=None, session_file=None):
-        # --- PATH CONFIGURATION ---
-        # Switch these back to absolute /app/ paths before building your Docker image
-        self.config_file = "/app/config.json"
-        self.session_file = "/sessions/tesla-session.json"
+    def __init__(self, config_file="/app/config.json", session_file="/sessions/tesla-session.json"):
+        # Reverted to your exact paths
+        self.config_file = config_file
+        self.session_file = session_file
         self.private_key_path = "/app/private-key.pem"
         
         self.client_id = None
@@ -51,16 +49,21 @@ class TeslaAPI:
             logger.warning("No valid session file found")
 
     def save_session(self):
-        with open(self.session_file, 'w') as f:
-            json.dump({
-                'access_token': self.access_token,
-                'refresh_token': self.refresh_token,
-                'vehicle_id': self.vehicle_id
-            }, f)
-            logger.debug("Tesla tokens updated and saved.")
+        """Persist new tokens to survive container restarts."""
+        try:
+            session_data = {
+                "access_token": self.access_token,
+                "refresh_token": self.refresh_token,
+                "vehicle_id": self.vehicle_id,
+                "updated_at": int(time.time())
+            }
+            with open(self.session_file, 'w') as f:
+                json.dump(session_data, f, indent=4)
+            logger.info("Tesla tokens updated and saved to disk.")
+        except Exception as e:
+            logger.error(f"Failed to save Tesla session: {e}")
 
     def _get_parsed_key(self):
-        """Returns the formal EllipticCurvePrivateKey object required by the library"""
         try:
             with open(self.private_key_path, "rb") as key_file:
                 return serialization.load_pem_private_key(
@@ -69,33 +72,41 @@ class TeslaAPI:
                     backend=default_backend()
                 )
         except Exception as e:
-            logger.error(f"CRITICAL: Key parsing failed: {e}")
+            logger.error(f"Key parsing failed: {e}")
             return None
 
-    async def charge_start(self):
-        """Starts the charging session (Signed Command)"""
-        try:
-            # self.vehicle is your VehicleSigned instance
-            result = await self.vehicle.charge_start()
-            logger.info(f"Charge Start command sent: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"Failed to start charging: {e}")
-            return None
+    def _run_async(self, coro_func, *args, **kwargs):
+        """Bridge between sync main loop and async library to fix RuntimeWarnings."""
+        async def wrapper():
+            async with aiohttp.ClientSession() as session:
+                if not self.access_token:
+                    if not await self._refresh_tokens_async(session): return None
 
-    async def charge_stop(self):
-        """Stops the charging session (Signed Command)"""
-        try:
-            result = await self.vehicle.charge_stop()
-            logger.info(f"Charge Stop command sent: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"Failed to stop charging: {e}")
-            return None
+                parsed_key = self._get_parsed_key()
+                if not parsed_key: return None
 
+                api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
+                api.private_key = parsed_key
+                vehicle = VehicleSigned(api, self.vehicle_id) if self.vehicle_id else None
+
+                try:
+                    return await coro_func(api, vehicle, *args, **kwargs)
+                except Exception as e:
+                    if "401" in str(e).lower() or "unauthorized" in str(e).lower():
+                        if await self._refresh_tokens_async(session):
+                            api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
+                            api.private_key = parsed_key
+                            vehicle = VehicleSigned(api, self.vehicle_id)
+                            return await coro_func(api, vehicle, *args, **kwargs)
+                    
+                    if "offline" in str(e).lower():
+                        raise
+                    logger.error(f"Tesla Request Failed: {e}")
+                    return None
+                
+        return asyncio.run(wrapper())
 
     async def _refresh_tokens_async(self, session):
-        logger.info("Refreshing Tesla access token...")
         url = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
         data = {
             "grant_type": "refresh_token",
@@ -105,173 +116,80 @@ class TeslaAPI:
         }
         try:
             async with session.post(url, data=data) as resp:
-                if resp.status != 200:
-                    logger.error(f"Token refresh failed: {await resp.text()}")
-                    return False
+                if resp.status != 200: return False
                 tokens = await resp.json()
                 self.access_token = tokens["access_token"]
                 self.refresh_token = tokens["refresh_token"]
                 self.save_session()
                 return True
-        except Exception as e:
-            logger.error(f"Token refresh error: {e}")
+        except Exception:
             return False
 
-    def _run_async(self, coro_func, *args, **kwargs):
-        async def wrapper():
-            async with aiohttp.ClientSession() as session:
-                # Initial token check
-                if not self.access_token:
-                    if await self._refresh_tokens_async(session):
-                        self.save_session()  # <--- SAVE AFTER INITIAL REFRESH
-                    else:
-                        logger.error("Initial token refresh failed.")
-                        return None
-
-                # 1. Parse Key
-                parsed_key = self._get_parsed_key()
-                if not parsed_key: return None
-
-                # 2. Init API and Inject Key
-                api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
-                api.private_key = parsed_key
-
-                # 3. Init Vehicle (VehicleSigned is the wrapper now)
-                vehicle = None
-                if self.vehicle_id:
-                    vehicle = VehicleSigned(api, self.vehicle_id)
-
-                try:
-                    return await coro_func(api, vehicle, *args, **kwargs)
-                except Exception as e:
-                    # Catch 401 Unauthorized errors
-                    if "401" in str(e).lower() or "unauthorized" in str(e).lower():
-                        logger.info("401 detected, attempting token refresh...")
-                        if await self._refresh_tokens_async(session):
-                            self.save_session()  # <--- SAVE AFTER RETRY REFRESH
-                        
-                            # Re-init on retry with new tokens
-                            api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
-                            api.private_key = parsed_key
-                            vehicle = VehicleSigned(api, self.vehicle_id)
-                            return await coro_func(api, vehicle, *args, **kwargs)
-                
-                    # Re-raise VehicleOffline so ChargingAutomation.py can catch it
-                    if "offline" in str(e).lower():
-                        raise
-                    logger.error(f"Tesla Request Failed: {e}")
-                    return None
-                
-        return asyncio.run(wrapper())
-
-    def save_session(self):
-        """Persist the new tokens to the TrueNAS mount."""
-        try:
-            # Match the path logic you hand-edited for /evapp
-            session_data = {
-                "access_token": self.access_token,
-                "refresh_token": self.refresh_token,
-                "created_at": int(time.time())
-            }
-            with open(self.session_file, 'w') as f:
-                json.dump(session_data, f, indent=4)
-            logger.info("Tesla session persisted to disk.")
-        except Exception as e:
-            logger.error(f"Failed to save Tesla session file: {e}")
-
-
-    # --- Commands ---
+    # --- Commands (Public Sync Bridges) ---
 
     def get_state(self):
-        """Checks the vehicle state (online, asleep, offline) without waking it."""
+        """Passive check of vehicle state."""
         try:
-            # api.vehicle_list() returns cached cloud state
-            vehicles = self._run_async(lambda api, _: api.vehicle_list())
-            for v in vehicles.get('vehicles', []):
-                if v['vin'] == self.vin:
-                    return v['state']
+            # Fixed attribute: api.vehicles() returns the list
+            result = self._run_async(lambda api, _: api.vehicles())
+            for v in result.get('response', []):
+                # Using vehicle_id as identifier
+                if v.get('vin') == self.vehicle_id or v.get('id_s') == self.vehicle_id:
+                    return v.get('state', 'unknown')
             return "unknown"
         except Exception:
             return "offline"
 
-    def get_battery_level(self):
-        """Returns battery level or None if the car is asleep."""
-        try:
-            data = self.get_vehicle_data()
-            return data.get('charge_state', {}).get('battery_level')
-        except Exception: # Catch VehicleOffline specifically
-            return None
-
-
-
-# --- Observation Methods (Read) ---
-
     def is_charger_connected(self):
-        """
-        Checks if the charger is connected without waking the vehicle.
-        Uses the cloud-cached vehicle list data.
-        """
-        try:
-            # Correct library attribute: api.vehicles.list()
-            result = self._run_async(lambda api, _: api.vehicles.list())
-        
-            if result is None:
-                logger.warning("Tesla API returned None for vehicle list. Defaulting to connected.")
-                return True
-
-            vehicles_data = result.get('vehicles', [])
-            for v in vehicles_data:
-                # Match against the ID you use for VehicleSigned (likely your VIN)
-                # We check both 'vin' and 'id_s' to be safe
-                if v.get('vin') == self.vehicle_id or v.get('id_s') == self.vehicle_id:
-                    return True 
-        
-            logger.warning(f"Vehicle {self.vehicle_id} not found in account vehicle list.")
-            return False
-        except Exception as e:
-            logger.error(f"Passive connectivity check failed: {e}. Fail-safe to True.")
-            return True
-
-    def is_charging(self):
-        data = self.get_vehicle_data()
-        if not data:
-            return False
-        state = data.get('response', {}).get('charge_state', {}).get('charging_state')
-        return state == 'Charging'
-
-    def get_battery_level(self):
-        data = self.get_vehicle_data()
-        if not data:
-            return 0
-        return data.get('response', {}).get('charge_state', {}).get('battery_level', 0)
-
-    def get_current_schedule_amp(self):
-        data = self.get_vehicle_data()
-        if not data:
-            return 0
-        return data.get('response', {}).get('charge_state', {}).get('charge_amps', 0)
+        state = self.get_state()
+        return state != "offline"
 
     def wake_up(self):
-        async def _wake(api, vehicle):
-            return await vehicle.wake_up()
-        return self._run_async(_wake)
-    
+        return self._run_async(lambda _, v: v.wake_up())
+
     def get_vehicle_data(self):
-        async def _get(api, vehicle): return await vehicle.vehicle_data()
-        return self._run_async(_get)
+        """Full telemetry data poll."""
+        return self._run_async(lambda _, v: v.vehicle_data())
+
+    def charge_start(self):
+        return self._run_async(lambda _, v: v.charge_start())
+
+    def charge_stop(self):
+        return self._run_async(lambda _, v: v.charge_stop())
+
+    def set_charging_amps(self, amps):
+        amps = max(self.AMPS_MIN, min(amps, self.AMPS_MAX))
+        return self._run_async(lambda _, v: v.set_charging_amps(amps))
+
+    def is_charging(self):
+        try:
+            data = self.get_vehicle_data()
+            state = data.get('response', {}).get('charge_state', {}).get('charging_state')
+            return state == 'Charging'
+        except Exception:
+            return False
+
+    def get_battery_level(self):
+        try:
+            data = self.get_vehicle_data()
+            return data.get('response', {}).get('charge_state', {}).get('battery_level', 0)
+        except Exception:
+            return 0
+
+    def get_current_schedule_amp(self):
+        try:
+            data = self.get_vehicle_data()
+            return data.get('response', {}).get('charge_state', {}).get('charge_amps', 0)
+        except Exception:
+            return 0
+
+    # --- Schedule-Specific Aliases ---
 
     def set_schedule_amps(self, amps):
-        amps = max(self.AMPS_MIN, min(amps, self.AMPS_MAX))
-        async def _set(api, vehicle):
-            logger.info(f"Setting Tesla charging to {amps}A...")
-            return await vehicle.set_charging_amps(amps)
-        return self._run_async(_set)
+        return self.set_charging_amps(amps)
 
     def set_schedule_off(self):
-        async def _stop(api, vehicle): return await vehicle.charge_stop()
-        return self._run_async(_stop)
+        return self.charge_stop()
         
     def set_schedule_default(self):
-        """Resets the vehicle to the maximum charging speed (48A)."""
-        logger.info(f"Resetting Tesla charging to default maximum ({self.AMPS_MAX}A)...")
         return self.set_schedule_amps(self.AMPS_MAX)
