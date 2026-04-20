@@ -256,7 +256,7 @@ def run_charging_automation():
                 logger.info('Tesla is asleep and no surplus available. Let it sleep.')
                 tesla_soc = 100  # Treat as full so Rule 4 doesn't trigger
         else:
-            tesla_soc = soc
+            tesla_soc = tesla_soc
     # End if tesla_connected
 
     # 3. Determine SOC (Integrating your Disconnected = 100% logic)
