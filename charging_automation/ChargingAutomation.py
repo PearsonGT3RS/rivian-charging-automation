@@ -207,7 +207,6 @@ def run_charging_automation():
                     if state != "online":
                         logger.info('Tesla is %s. Waking for night SOC check...', state)
                         tesla.wake_up()
-                        time.sleep(5)
                 
                 soc = vehicle.get_battery_level() or 0
                 if soc < charging_limit:
@@ -253,7 +252,6 @@ def run_charging_automation():
             # Only wake the Highland if we have enough surplus to start charging
             logger.info('Surplus > %dW. Waking Tesla for SOC check...', TESLA_MIN_WATTS)
             tesla.wake_up()
-            time.sleep(5) # Allow infotainment to boot
             tesla_soc = tesla.get_battery_level() or 100
         else:
             logger.info('Tesla is %s and no surplus available. Skipping SOC poll.', tesla_state)
