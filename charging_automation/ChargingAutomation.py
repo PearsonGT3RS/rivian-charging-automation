@@ -243,10 +243,10 @@ def run_charging_automation():
     tesla_soc = 100 # Default to "Full" to prevent accidental draw
     if tesla_connected:
         # Passive check of cloud state (doesn't wake car)
-        soc = tesla.get_battery_level() # returns 0 if asleep
+        tesla_soc = tesla.get_battery_level() # returns 0 if asleep
         
 
-        if soc == 0:
+        if tesla_soc == 0:
             if available_power > TESLA_MIN_WATTS:
             # Only wake the Highland if we have enough surplus to start charging
                 logger.info('Surplus > %dW. Waking Tesla for SOC check...', TESLA_MIN_WATTS)
