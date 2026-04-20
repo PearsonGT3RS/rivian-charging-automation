@@ -145,7 +145,19 @@ class TeslaAPI:
         return state != "offline"
 
     def wake_up(self):
-        return self._run_async(lambda _, v: v.wake_up())
+        """Wakes the vehicle and waits for telemetry to stabilize."""
+        async def _wake(api, vehicle):
+            return await vehicle.wake_up()
+        
+        logger.info("Sending wake command to Tesla...")
+        result = self._run_async(_wake)
+        
+        # Highland-specific stabilization delay
+        # This prevents 'VehicleOffline' crashes in the next step of the loop
+        logger.info("Waiting 20 seconds for Highland telemetry to boot...")
+        time.sleep(20) 
+        
+        return result
 
     def get_vehicle_data(self):
         """Full telemetry data poll."""
