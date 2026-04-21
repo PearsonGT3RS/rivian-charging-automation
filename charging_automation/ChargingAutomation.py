@@ -210,16 +210,14 @@ def run_charging_automation():
                 if not connected:
                     continue
                 
-                # --- FIX: Fetch the SOC for whichever vehicle is currently looping ---
+                # Fetch the SOC for whichever vehicle is currently looping
                 soc = vehicle.get_battery_level() or 0
                 
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
-                    # We already tried to get the SOC above. If it's 0, it's asleep.
                     if soc == 0: 
                         logger.info('Tesla is asleep. Waking for night SOC check...')
                         vehicle.wake_up()
-                        # Now grab the real awake SOC
                         soc = vehicle.get_battery_level() or 0
                         
                         # Re-verify connection now that telemetry is online
@@ -227,20 +225,28 @@ def run_charging_automation():
                             logger.info('Tesla woke up but is disconnected. Skipping night charge.')
                             continue
 
+                # --- NEW OPTIMIZATION: State-Aware Night Charging ---
+                # Check current state safely
+                try:
+                    is_currently_charging = vehicle.is_charging()
+                except Exception:
+                    is_currently_charging = False
+
                 if soc < charging_limit:
-                    logger.info('%s: below limit (%d%% < %d%%). Starting night charge.', name, round(soc), charging_limit)
-                    if name == "Tesla":
-                        vehicle.charge_start() # Use Signed Start
-                        # Set to max (or your preferred night rate) using Signed Amps
-                        vehicle.set_charging_amps(vehicle.AMPS_MAX)
-                    else:
-                        vehicle.set_schedule_amps(vehicle.AMPS_MAX) # Use Schedule Amps for Rivian
+                    if not is_currently_charging:
+                        logger.info('%s: below limit (%d%% < %d%%) and not charging. Starting night charge.', name, round(soc), charging_limit)
+                        if name == "Tesla":
+                            vehicle.charge_start() # Use Signed Start
+                            vehicle.set_charging_amps(vehicle.AMPS_MAX)
+                        else:
+                            vehicle.set_schedule_amps(vehicle.AMPS_MAX) # Use Schedule Amps for Rivian
                 else:
-                    logger.info('%s: at limit (%d%%). Stopping night charge.', name, round(soc))
-                    if name == "Tesla":
-                        vehicle.charge_stop()
-                    else:
-                        vehicle.set_schedule_off() # Use Schedule Off for Rivian to avoid wake-up
+                    if is_currently_charging:
+                        logger.info('%s: at limit (%d%%). Stopping night charge.', name, round(soc))
+                        if name == "Tesla":
+                            vehicle.charge_stop()
+                        else:
+                            vehicle.set_schedule_off() # Use Schedule Off for Rivian to avoid wake-up
         
         logger.info('Night-time processing complete.')
         return # Exit the function; do not proceed to solar logic
