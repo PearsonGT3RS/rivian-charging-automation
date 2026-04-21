@@ -210,12 +210,16 @@ def run_charging_automation():
                 if not connected:
                     continue
                 
+                # --- FIX: Fetch the SOC for whichever vehicle is currently looping ---
+                soc = vehicle.get_battery_level() or 0
+                
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
-                    soc = vehicle.get_battery_level() # returns 0 if asleep
-                    if soc == 0: # <--- LOGIC INVERSION FIXED
+                    # We already tried to get the SOC above. If it's 0, it's asleep.
+                    if soc == 0: 
                         logger.info('Tesla is asleep. Waking for night SOC check...')
                         vehicle.wake_up()
+                        # Now grab the real awake SOC
                         soc = vehicle.get_battery_level() or 0
                         
                         # Re-verify connection now that telemetry is online
