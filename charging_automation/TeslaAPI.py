@@ -26,6 +26,11 @@ class TeslaAPI:
         self.refresh_token = None
         self.vehicle_id = None 
         
+
+        # --- NEW: Execution-level cache ---
+        self._cached_vehicle_data = None
+        self._cache_populated = False # Used to safely cache 'None' when asleep
+
         self._load_config()
         self.load_session()
         
@@ -153,11 +158,25 @@ class TeslaAPI:
         logger.info("Waiting 30 seconds for Highland telemetry to boot...")
         time.sleep(30)
         
+        # --- NEW: Cache Invalidation ---
+        # The car is now awake. Flush the 'None' cache so the next call 
+        # hits the network to get the fresh telemetry payload.
+        self._cached_vehicle_data = None
+        self._cache_populated = False
+
         return result
 
-    def get_vehicle_data(self):
+    def get_vehicle_data(self, force_refresh=False):
+        """Fetches data from the API or serves it from the ephemeral cache."""
+        if not force_refresh and self._cache_populated:
+            return self._cached_vehicle_data
+        
         async def _get(api, vehicle): return await vehicle.vehicle_data()
-        return self._run_async(_get)
+
+        self._cached_vehicle_data = self._run_async(_get)
+        self._cache_populated = True
+        
+        return self._cached_vehicle_data
 
     def get_battery_level(self):
         data = self.get_vehicle_data()
