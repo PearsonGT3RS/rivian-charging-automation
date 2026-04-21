@@ -4,7 +4,7 @@ import asyncio
 import aiohttp
 import time
 from tesla_fleet_api import TeslaFleetApi
-from tesla_fleet_api.exceptions import VehicleOffline
+from tesla_fleet_api.exceptions import VehicleOffline, OAuthExpired
 from tesla_fleet_api.tesla.vehicle.signed import VehicleSigned
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
@@ -101,14 +101,25 @@ class TeslaAPI:
                     logger.debug("Tesla is asleep. Safely returning None.")
                     return None
                     
-                except Exception as e:
-                    if "401" in str(e).lower() or "unauthorized" in str(e).lower():
+                except (OAuthExpired, Exception) as e:
+                    # PROPER FIX: Explicitly catch OAuthExpired class or string matches
+                    is_auth_error = isinstance(e, OAuthExpired) or "401" in str(e).lower() or "unauthorized" in str(e).lower()
+                    
+                    if is_auth_error:
+                        logger.info("Tesla token expired. Attempting refresh...")
                         if await self._refresh_tokens_async(session):
+                            # Rebuild the API objects with the fresh tokens
                             api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
                             api.private_key = parsed_key
                             vehicle = VehicleSigned(api, self.vehicle_id)
-                            return await coro_func(api, vehicle, *args, **kwargs)
                             
+                            # Wrap the retry in a try/except so a failed retry doesn't crash main.py
+                            try:
+                                return await coro_func(api, vehicle, *args, **kwargs)
+                            except Exception as retry_e:
+                                logger.error(f"Retry failed after token refresh: {retry_e}")
+                                return None
+                                
                     logger.error(f"Tesla Request Failed: {e}")
                     return None
                     
