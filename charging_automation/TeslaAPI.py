@@ -137,8 +137,16 @@ class TeslaAPI:
             async with session.post(url, data=data) as resp:
                 if resp.status != 200: return False
                 tokens = await resp.json()
+                # PROPER FIX: Protect against 'None' payloads and eliminate brackets
+                if not tokens: 
+                    return False
+                
                 self.access_token = tokens["access_token"]
                 self.refresh_token = tokens["refresh_token"]
+
+                if not self.access_token:
+                    return False
+                
                 self.save_session()
                 return True
         except Exception:
