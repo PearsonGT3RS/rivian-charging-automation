@@ -194,31 +194,31 @@ class RivianAPI:
     def set_schedule_custom(self, amps=AMPS_MAX):
         new_schedule = {
                 "startTime": 0,
-                "duration": 1440,
-                "location": {
-                },
+                "duration": 1440, # 24-hour window
+                "location": {},
                 "amperage": self.AMPS_MAX,
                 "enabled": True,
                 "weekDays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
             }
 
         if amps == 0:
-            # Use time-specific schedule that does not overlap with the current time:
-            # in the first half of the day use 18:00-19:00; second half — use 6:00-7:00
-            current_hour = datetime.now().hour
-            new_schedule["startTime"] = 18 * 60 if current_hour < 12 else 6 * 60
-            new_schedule["duration"] = 60
+            # PROPER FIX: Do not shift the time window. Just disable the schedule.
+            new_schedule["enabled"] = False
+            new_schedule["amperage"] = self.AMPS_MIN # Safe default to pass API validation
         else:
-            new_schedule["amperage"] = amps
+            new_schedule["enabled"] = True
+            new_schedule["amperage"] = int(amps)
 
         current_schedules = self.get_current_schedules()
-        # copy the location from the existing schedule
-        new_schedule["location"] = current_schedules[0]["location"]
+        
+        # Safely copy the location from the existing schedule
+        if current_schedules and len(current_schedules) > 0:
+            new_schedule["location"] = current_schedules[0].get("location", {})
 
         logger.info('Schedule to be set: {}'.format(new_schedule))
 
         # Don't make unnecessary updates
-        if new_schedule == current_schedules[0]:
+        if current_schedules and len(current_schedules) > 0 and new_schedule == current_schedules[0]:
             logger.info('No change to the charging schedule. Not updating')
             return
 
