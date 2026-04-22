@@ -49,7 +49,7 @@ class TeslaAPI:
                 session = json.load(f)
                 self.access_token = session.get('access_token')
                 self.refresh_token = session.get('refresh_token')
-                self.last_known_soc = data.get("last_known_soc", 0) # <--- NEW: Load last known SoC from session for cache priming
+                self.last_known_soc = session.get("last_known_soc", 0) # <--- NEW: Load last known SoC from session for cache priming
                 self.vehicle_id = session.get('vehicle_id') 
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning("No valid session file found")
