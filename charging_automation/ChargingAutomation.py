@@ -265,7 +265,17 @@ def run_charging_automation():
                             vehicle.set_schedule_off() # Use Schedule Off for Rivian to avoid wake-up
         
         logger.info('Night-time processing complete.')
-        return # Exit the function; do not proceed to solar logic
+
+        # --- NEW FIX: Evaluate state specifically for the night ---
+        # If we are actively charging at night, stay on 5-min loops to prevent overcharging.
+        # If resting, safely return False to trigger the 30-min sleep in main.py.
+        try:
+            actively_charging = (rivian_connected and rivian.is_charging()) or \
+                                (tesla_connected and tesla.is_charging())
+            return actively_charging
+        except Exception:
+            return True # Failsafe: stay on 5-min loops if API fails
+            
     # --- END NIGHT TIME HANDLING ---
 
     # Daytime Solar Logic continues here...
@@ -364,3 +374,8 @@ def run_charging_automation():
         apply_charging(tesla, tesla_w, 1, 'Tesla')
 
     logger.info('Automation cycle complete')
+    
+    # --- NEW FIX: Always monitor solar ---
+    # Because this code block is only reached during the day, we must ALWAYS 
+    # return True so main.py checks solar production every 5 minutes.
+    return True
