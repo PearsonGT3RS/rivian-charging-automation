@@ -15,6 +15,8 @@ VOLTS = 240                  # nominal charging voltage
 CHANGE_THRESHOLD_WATTS = 500 # ignore fluctuations smaller than ~2A Rivian step
 RIVIAN_MIN_WATTS = RivianAPI.AMPS_MIN * VOLTS  # 8A * 240V = 1920W
 TESLA_MIN_WATTS = TeslaAPI.AMPS_MIN * VOLTS    # 5A * 240V = 1200W
+# --- NEW: Night Kill-Switch ---
+# pull enable_night_management from config with a default of True to preserve existing behavior
 
 
 class AutomationMode(Enum):
@@ -195,6 +197,12 @@ def run_charging_automation():
 
     # --- NIGHT TIME HANDLING ---
     if is_night_time(config):
+
+        # --- NEW: Early exit if night management is disabled ---
+        if not getattr(config, 'enable_night_management', True):
+            logger.info('Night management is disabled. Ignoring vehicles until morning.')
+            return False # Tells main.py to sleep for 30 minutes
+        
         if mode == AutomationMode.SOLAR_ONLY:
             logger.info('Solar-only mode: ensuring charging is stopped for the night')
             if rivian_connected:
