@@ -214,7 +214,7 @@ class TeslaAPI:
             
         # Safely extract the SOC using your exact path
         soc = data.get('response', {}).get('charge_state', {}).get('battery_level', 0)
-        limit = data.get('response', {}).get('charge_state', {}).get('charge_limit_soc', 80)
+        limit = data.get('response', {}).get('charge_state', {}).get('charge_limit_soc', 100)
 
         # Save to persistent disk only if we got a valid reading and it changed
         if soc > 0 and (self.last_known_soc != soc or getattr(self, 'last_known_limit', 100) != limit):
@@ -229,12 +229,12 @@ class TeslaAPI:
         """Returns the internal charge limit set on the vehicle's screen."""
         data = self.get_vehicle_data()
         if not data:
-            return getattr(self, 'last_known_limit', 80)
-        return data.get('response', {}).get('charge_state', {}).get('charge_limit_soc', 80)
+            return getattr(self, 'last_known_limit', 100)
+        return data.get('response', {}).get('charge_state', {}).get('charge_limit_soc', 100)
 
     def get_cached_vehicle_limit(self):
         """Returns the persistent limit without waking the car."""
-        return getattr(self, 'last_known_limit', 80)
+        return getattr(self, 'last_known_limit', 100)
 
 
     def get_cached_battery_level(self):
