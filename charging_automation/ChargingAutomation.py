@@ -297,16 +297,22 @@ def run_charging_automation():
         if tesla_soc == 0:
             # --- NEW: Smart Cache Check ---
             cached_soc = tesla.get_cached_battery_level()
+            cached_limit = tesla.get_cached_vehicle_limit()
             
-            if cached_soc >= 80:
-                logger.info('Tesla is asleep and cached SOC is 80%. Letting it sleep.')
-                tesla_soc = 80
+            # --- FIX: Check the offline cache against the car's internal limit ---
+            if cached_soc >= cached_limit:
+                logger.info('Tesla is asleep. Cached SOC (%d%%) is at vehicle limit (%d%%). Letting it sleep.', cached_soc, cached_limit)
+                tesla_soc = 100
             elif available_power > TESLA_MIN_WATTS:
                 logger.info('Surplus > %dW. Waking Tesla for solar charge...', TESLA_MIN_WATTS)
                 tesla.wake_up()
                 tesla_soc = tesla.get_battery_level() or 100
                 
-                if not tesla.is_charger_connected():
+                # Check limit again after waking just to be safe
+                if tesla_soc >= tesla.get_vehicle_limit():
+                    logger.info('Tesla woke up but is already at its internal limit. Treating as full.')
+                    tesla_soc = 100
+                elif not tesla.is_charger_connected():
                     logger.info('Tesla woke up but is disconnected. Re-allocating solar.')
                     tesla_connected = False
                     tesla_soc = 100
@@ -314,7 +320,13 @@ def run_charging_automation():
                 logger.info('Tesla is asleep and no surplus available. Let it sleep.')
                 tesla_soc = 100 
         else:
-            tesla_soc = tesla_soc
+            # --- FIX: Car is awake. Respect the internal screen limit! ---
+            tesla_limit = tesla.get_vehicle_limit()
+            if tesla_soc >= tesla_limit:
+                logger.info('Tesla is at its internal screen limit (%d%%). Treating as full.', tesla_limit)
+                tesla_soc = 100
+            else:
+                tesla_soc = tesla_soc
     # End if tesla_connected
 
     # 3. Determine SOC (Integrating your Disconnected = 100% logic)
