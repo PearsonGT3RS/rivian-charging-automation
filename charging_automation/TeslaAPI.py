@@ -26,6 +26,7 @@ class TeslaAPI:
         self.refresh_token = None
         self.vehicle_id = None 
         self.last_known_soc = 0  # <--- NEW: Initialize cache
+        self.last_known_limit = 0 # <--- NEW: Cache for current charge limit to avoid unnecessary API calls
 
         # --- NEW: Execution-level cache ---
         self._cached_vehicle_data = None
@@ -51,8 +52,13 @@ class TeslaAPI:
                 self.refresh_token = session.get('refresh_token')
                 self.last_known_soc = session.get("last_known_soc", 0) # <--- NEW: Load last known SoC from session for cache priming
                 self.vehicle_id = session.get('vehicle_id') 
+                # --- NEW: Load the limit from disk ---
+                self.last_known_limit = session.get("last_known_limit", 80)
+            
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning("No valid session file found")
+            self.last_known_soc = 0
+            self.last_known_limit = 80
 
     def save_session(self):
         """Persist tokens to disk to maintain the single-use OAuth chain."""
@@ -62,6 +68,7 @@ class TeslaAPI:
                 "refresh_token": self.refresh_token,
                 "last_known_soc": self.last_known_soc,  # <--- NEW: Save last known SoC to session for cache priming
                 "vehicle_id": self.vehicle_id,
+                "last_known_limit": self.last_known_limit, # <--- NEW: Save the limit to disk
                 "updated_at": int(time.time())
             }
             with open(self.session_file, 'w') as f:
@@ -70,6 +77,7 @@ class TeslaAPI:
         except Exception as e:
             logger.error(f"Failed to save Tesla session: {e}")
 
+    
     def _get_parsed_key(self):
         try:
             with open(self.private_key_path, "rb") as key_file:
@@ -206,13 +214,28 @@ class TeslaAPI:
             
         # Safely extract the SOC using your exact path
         soc = data.get('response', {}).get('charge_state', {}).get('battery_level', 0)
-        
+        limit = data.get('response', {}).get('charge_state', {}).get('charge_limit_soc', 80)
+
         # Save to persistent disk only if we got a valid reading and it changed
-        if soc > 0 and self.last_known_soc != soc:
+        if soc > 0 and (self.last_known_soc != soc or getattr(self, 'last_known_limit', 100) != limit):
             self.last_known_soc = soc
+            self.last_known_limit = limit
             self.save_session()
             
         return soc
+
+    # --- NEW: Limit Getter Methods ---
+    def get_vehicle_limit(self):
+        """Returns the internal charge limit set on the vehicle's screen."""
+        data = self.get_vehicle_data()
+        if not data:
+            return getattr(self, 'last_known_limit', 80)
+        return data.get('response', {}).get('charge_state', {}).get('charge_limit_soc', 80)
+
+    def get_cached_vehicle_limit(self):
+        """Returns the persistent limit without waking the car."""
+        return getattr(self, 'last_known_limit', 80)
+
 
     def get_cached_battery_level(self):
         """Returns the persistent SOC without waking the car."""
