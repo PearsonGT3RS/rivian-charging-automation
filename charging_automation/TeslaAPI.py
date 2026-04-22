@@ -25,7 +25,7 @@ class TeslaAPI:
         self.access_token = None
         self.refresh_token = None
         self.vehicle_id = None 
-        
+        self.last_known_soc = 0  # <--- NEW: Initialize cache
 
         # --- NEW: Execution-level cache ---
         self._cached_vehicle_data = None
@@ -49,6 +49,7 @@ class TeslaAPI:
                 session = json.load(f)
                 self.access_token = session.get('access_token')
                 self.refresh_token = session.get('refresh_token')
+                self.last_known_soc = data.get("last_known_soc", 0) # <--- NEW: Load last known SoC from session for cache priming
                 self.vehicle_id = session.get('vehicle_id') 
         except (FileNotFoundError, json.JSONDecodeError):
             logger.warning("No valid session file found")
@@ -59,6 +60,7 @@ class TeslaAPI:
             session_data = {
                 "access_token": self.access_token,
                 "refresh_token": self.refresh_token,
+                "last_known_soc": self.last_known_soc,  # <--- NEW: Save last known SoC to session for cache priming
                 "vehicle_id": self.vehicle_id,
                 "updated_at": int(time.time())
             }
@@ -201,7 +203,20 @@ class TeslaAPI:
         data = self.get_vehicle_data()
         if not data:
             return 0 
-        return data.get('response', {}).get('charge_state', {}).get('battery_level', 0)
+            
+        # Safely extract the SOC using your exact path
+        soc = data.get('response', {}).get('charge_state', {}).get('battery_level', 0)
+        
+        # Save to persistent disk only if we got a valid reading and it changed
+        if soc > 0 and self.last_known_soc != soc:
+            self.last_known_soc = soc
+            self.save_session()
+            
+        return soc
+
+    def get_cached_battery_level(self):
+        """Returns the persistent SOC without waking the car."""
+        return self.last_known_soc
 
     def is_charging(self):
         data = self.get_vehicle_data()

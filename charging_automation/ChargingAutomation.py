@@ -222,13 +222,21 @@ def run_charging_automation():
                 soc = vehicle.get_battery_level() or 0
                 
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
+                # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
                     if soc == 0: 
-                        logger.info('Tesla is asleep. Waking for night SOC check...')
+                        # --- NEW: Smart Cache Check ---
+                        cached_soc = vehicle.get_cached_battery_level()
+                        
+                        if cached_soc >= charging_limit:
+                            logger.info('Tesla is asleep. Cached SOC (%d%%) is >= Night Limit (%d%%). Letting it sleep.', cached_soc, charging_limit)
+                            soc = cached_soc
+                            continue  # Skips the rest of the night loop safely
+                            
+                        logger.info('Tesla is asleep, but cached SOC is low. Waking for charge...')
                         vehicle.wake_up()
                         soc = vehicle.get_battery_level() or 0
                         
-                        # Re-verify connection now that telemetry is online
                         if not vehicle.is_charger_connected():
                             logger.info('Tesla woke up but is disconnected. Skipping night charge.')
                             continue
@@ -274,25 +282,27 @@ def run_charging_automation():
     # Tesla SOC (Integrating Sleep-Aware + Disconnected = 100% logic)
     tesla_soc = 100 # Default to "Full" to prevent accidental draw
     if tesla_connected:
-        # Passive check of cloud state (doesn't wake car)
         tesla_soc = tesla.get_battery_level() # returns 0 if asleep
         
-
         if tesla_soc == 0:
-            if available_power > TESLA_MIN_WATTS:
-            # Only wake the Highland if we have enough surplus to start charging
-                logger.info('Surplus > %dW. Waking Tesla for SOC check...', TESLA_MIN_WATTS)
+            # --- NEW: Smart Cache Check ---
+            cached_soc = tesla.get_cached_battery_level()
+            
+            if cached_soc >= 80:
+                logger.info('Tesla is asleep and cached SOC is 80%. Letting it sleep.')
+                tesla_soc = 80
+            elif available_power > TESLA_MIN_WATTS:
+                logger.info('Surplus > %dW. Waking Tesla for solar charge...', TESLA_MIN_WATTS)
                 tesla.wake_up()
                 tesla_soc = tesla.get_battery_level() or 100
                 
-                # Re-verify connection now that telemetry is online
                 if not tesla.is_charger_connected():
                     logger.info('Tesla woke up but is disconnected. Re-allocating solar.')
                     tesla_connected = False
                     tesla_soc = 100
             else:
                 logger.info('Tesla is asleep and no surplus available. Let it sleep.')
-                tesla_soc = 100  # Treat as full so Rule 4 doesn't trigger
+                tesla_soc = 100 
         else:
             tesla_soc = tesla_soc
     # End if tesla_connected
