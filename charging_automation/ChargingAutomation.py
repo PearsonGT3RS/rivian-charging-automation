@@ -72,12 +72,17 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
         return 0.0, 0.0
 
     # Single vehicle: all available solar goes to it
+    # Single vehicle: all available solar goes to it
     if rivian_connected and not tesla_connected:
+        if rivian_soc >= 100: # <--- NEW FIX: Respect 100% limit
+            return 0.0, 0.0
         if rivian_soc > SOC_THRESHOLD and solar_for_ev <= 0:
             return 0.0, 0.0
         return total, 0.0
 
     if tesla_connected and not rivian_connected:
+        if tesla_soc >= 100: # <--- NEW FIX: Respect 100% limit
+            return 0.0, 0.0
         if tesla_soc > SOC_THRESHOLD and solar_for_ev <= 0:
             return 0.0, 0.0
         return 0.0, total
