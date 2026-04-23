@@ -300,22 +300,22 @@ def run_charging_automation():
         tesla_soc = tesla.get_battery_level() # returns 0 if asleep
         
         if tesla_soc == 0:
-            # --- NEW: Smart Cache Check ---
             cached_soc = tesla.get_cached_battery_level()
             cached_limit = tesla.get_cached_vehicle_limit()
             
-            # --- FIX: Check the offline cache against the car's internal limit ---
-            if cached_soc >= cached_limit:
-                logger.info('Tesla is asleep. Cached SOC (%d%%) is at vehicle limit (%d%%). Letting it sleep.', cached_soc, cached_limit)
+            # --- FIX: BMS Hysteresis Buffer (2%) ---
+            # Teslas will reject a charge if they are within a few percent of their limit.
+            if cached_soc > 0 and cached_soc >= (cached_limit - 2):
+                logger.info('Tesla is asleep. Cached SOC (%d%%) is near vehicle limit (%d%%). Letting it sleep.', cached_soc, cached_limit)
                 tesla_soc = 100
             elif available_power > TESLA_MIN_WATTS:
                 logger.info('Surplus > %dW. Waking Tesla for solar charge...', TESLA_MIN_WATTS)
                 tesla.wake_up()
                 tesla_soc = tesla.get_battery_level() or 100
                 
-                # Check limit again after waking just to be safe
-                if tesla_soc >= tesla.get_vehicle_limit():
-                    logger.info('Tesla woke up but is already at its internal limit. Treating as full.')
+                # Check limit again with buffer after waking
+                if tesla_soc >= (tesla.get_vehicle_limit() - 2):
+                    logger.info('Tesla woke up but is near its internal limit. Treating as full.')
                     tesla_soc = 100
                 elif not tesla.is_charger_connected():
                     logger.info('Tesla woke up but is disconnected. Re-allocating solar.')
@@ -325,10 +325,10 @@ def run_charging_automation():
                 logger.info('Tesla is asleep and no surplus available. Let it sleep.')
                 tesla_soc = 100 
         else:
-            # --- FIX: Car is awake. Respect the internal screen limit! ---
+            # --- FIX: Car is awake. Respect the internal screen limit with buffer! ---
             tesla_limit = tesla.get_vehicle_limit()
-            if tesla_soc >= tesla_limit:
-                logger.info('Tesla is at its internal screen limit (%d%%). Treating as full.', tesla_limit)
+            if tesla_soc >= (tesla_limit - 2):
+                logger.info('Tesla is near its internal screen limit (%d%%). Treating as full.', tesla_limit)
                 tesla_soc = 100
             else:
                 tesla_soc = tesla_soc
