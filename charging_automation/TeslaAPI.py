@@ -124,8 +124,12 @@ class TeslaAPI:
                             vehicle = VehicleSigned(api, self.vehicle_id)
                             
                             # Wrap the retry in a try/except so a failed retry doesn't crash main.py
+                            # --- ATTEMPT 2 (THE FIX) ---
                             try:
                                 return await coro_func(api, vehicle, *args, **kwargs)
+                            except VehicleOffline:
+                                logger.debug("Tesla is asleep after token refresh. Safely returning None.")
+                                return None
                             except Exception as retry_e:
                                 logger.error(f"Retry failed after token refresh: {retry_e}")
                                 return None
