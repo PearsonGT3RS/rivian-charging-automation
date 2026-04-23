@@ -78,6 +78,7 @@ class RivianAPI:
 
         logger.info('Loading Rivian user data...')
         request = {
+            # ... (keep your existing massive GraphQL query string here) ...
             "operationName": "getUserInfo",
             "variables": {},
             "query": "query getUserInfo { currentUser { __typename id firstName lastName email address { __typename country } vehicles { __typename id name owner roles vin vas { __typename vasVehicleId vehiclePublicKey } vehicle { __typename model mobileConfiguration { __typename trimOption { __typename optionId optionName } exteriorColorOption { __typename optionId optionName } interiorColorOption { __typename optionId optionName } } vehicleState { __typename supportedFeatures { __typename name status } } otaEarlyAccessStatus } settings { __typename name { __typename value } } } enrolledPhones { __typename vas { __typename vasPhoneId publicKey } enrolled { __typename deviceType deviceName vehicleId identityId shortName } } pendingInvites { __typename id invitedByFirstName role status vehicleId vehicleModel email } } }"
@@ -94,10 +95,29 @@ class RivianAPI:
 
         if response.status_code != 200:
             return False
+            
         data = response.json()
-        self.vehicle_id = data['data']['currentUser']['vehicles'][0]['id']
-        logger.info('Rivian user data loaded')
-        return True
+        
+        # --- PROPER FIX: Safely traverse the dictionary ---
+        try:
+            # Use .get() to avoid KeyErrors, and check if currentUser actually exists
+            current_user = data.get('data', {}).get('currentUser')
+            if not current_user:
+                logger.warning('Rivian returned 200 OK, but currentUser is missing (Token likely expired).')
+                return False
+                
+            vehicles = current_user.get('vehicles', [])
+            if not vehicles or len(vehicles) == 0:
+                logger.warning('Rivian returned user data, but no vehicles were found.')
+                return False
+                
+            self.vehicle_id = vehicles[0]['id']
+            logger.info('Rivian user data loaded')
+            return True
+            
+        except Exception as e:
+            logger.error(f'Failed to parse Rivian user data: {e}')
+            return False
 
     def init_vehicle_info(self):
         logger.info('Loading Rivian vehicle data...')
