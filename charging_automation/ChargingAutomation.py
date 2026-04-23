@@ -17,7 +17,9 @@ RIVIAN_MIN_WATTS = RivianAPI.AMPS_MIN * VOLTS  # 8A * 240V = 1920W
 TESLA_MIN_WATTS = TeslaAPI.AMPS_MIN * VOLTS    # 5A * 240V = 1200W
 # --- NEW: Night Kill-Switch ---
 # pull enable_night_management from config with a default of True to preserve existing behavior
-
+ENABLE_NIGHT_MANAGEMENT = True
+# --- NEW: BMS Hysteresis Buffer ---
+BMS_BUFFER_PCT = 2           # % buffer to prevent waking for minor battery sag
 
 class AutomationMode(Enum):
     OFF = 0          # automation disabled
@@ -305,7 +307,7 @@ def run_charging_automation():
             
             # --- FIX: BMS Hysteresis Buffer (2%) ---
             # Teslas will reject a charge if they are within a few percent of their limit.
-            if cached_soc > 0 and cached_soc >= (cached_limit - 2):
+            if cached_soc > 0 and cached_soc >= (cached_limit - BMS_BUFFER_PCT):
                 logger.info('Tesla is asleep. Cached SOC (%d%%) is near vehicle limit (%d%%). Letting it sleep.', cached_soc, cached_limit)
                 tesla_soc = 100
             elif available_power > TESLA_MIN_WATTS:
@@ -314,7 +316,7 @@ def run_charging_automation():
                 tesla_soc = tesla.get_battery_level() or 100
                 
                 # Check limit again with buffer after waking
-                if tesla_soc >= (tesla.get_vehicle_limit() - 2):
+                if tesla_soc >= (tesla.get_vehicle_limit() - BMS_BUFFER_PCT):
                     logger.info('Tesla woke up but is near its internal limit. Treating as full.')
                     tesla_soc = 100
                 elif not tesla.is_charger_connected():
@@ -327,7 +329,7 @@ def run_charging_automation():
         else:
             # --- FIX: Car is awake. Respect the internal screen limit with buffer! ---
             tesla_limit = tesla.get_vehicle_limit()
-            if tesla_soc >= (tesla_limit - 2):
+            if tesla_soc >= (tesla_limit - BMS_BUFFER_PCT):
                 logger.info('Tesla is near its internal screen limit (%d%%). Treating as full.', tesla_limit)
                 tesla_soc = 100
             else:
