@@ -26,8 +26,14 @@ class AutomationMode(Enum):
 
 def is_night_time(config):
     current_hour = datetime.now().hour
-    logger.info('Start Night: %d ; End Night: %d', config.night_time_start, config.night_time_end)
-    return current_hour < config.night_time_end or current_hour >= config.night_time_start
+    start = config.night_time_start
+    end = config.night_time_end
+    logger.info('Start Night: %d ; End Night: %d', start, end)
+    if start <= end:
+        # Same-day window, e.g. 01:00–05:00
+        return start <= current_hour < end
+    # Wraps midnight, e.g. 21:00–07:00
+    return current_hour >= start or current_hour < end
 
 
 def get_automation_mode(hubitat):
