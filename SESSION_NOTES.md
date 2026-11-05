@@ -17,6 +17,7 @@ Paste this file's contents into a new chat, then add these files to the chat:
 - charging_automation/main.py
 - charging_automation/config-example.json
 - charging_automation/requirements.txt
+- charging_automation/tests/test_charging_automation.py
 - charging_automation/tests/test_homeassistant.py
 - charging_automation/tests/test_solaredge.py
 - docker-compose.yml
@@ -52,7 +53,7 @@ Assistant so we can compute grid flow (grid = load - pv).
 
 Local (no network):
     cd charging_automation && python -m unittest discover -s tests -v
-Result: 22 tests, OK (3 skipped — live tests gated by HA_LIVE / SOLAREDGE_LIVE).
+Result: 46 tests, OK (3 skipped — live tests gated by HA_LIVE / SOLAREDGE_LIVE).
 
 Live (not yet run this session):
     cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
@@ -60,11 +61,24 @@ Requires /app/config.json with v2 keys and /sessions/solaredge-token.json.
 Bootstrap once if needed:
     cd charging_automation && python SolarEdgeAPI.py bootstrap /app/config.json <authorization_code>
 
+SolarEdge-only live run (next step):
+    cd charging_automation && SOLAREDGE_LIVE=1 python -m unittest tests.test_solaredge.TestSolarEdgeLive -v
+
 ## Commits this session
 
 - c03af4c — docs: add night-time fields to credentials example config
 - 4f7a196 — chore: update example config and pin dependencies
 - 6b538ba — chore: remove stale credentials example; update config example and pin deps
+- 7c575b6 — chore: clean up stale comments and dead code in charging automation
+  (removed unused ENABLE_NIGHT_MANAGEMENT, commented-out hysteresis block,
+  unused `soc = 0`, duplicated comment in allocate_solar_watts; RivianAPI
+  vehicleState None guard; TeslaAPI redundant except cleanup; HubitatAPI
+  URL-encoding comment)
+- d8fdc16 — fix: patch ChargingAutomation.datetime with fake class in
+  night-time tests (replaces the immutable datetime.datetime.now patch)
+- 05e7d65 — fix: handle same-day night window in is_night_time
+  (start <= end now uses `start <= hour < end`; wrapping window still uses
+  `hour >= start or hour < end`)
 
 ## Known gaps / follow-ups
 
@@ -72,23 +86,20 @@ Bootstrap once if needed:
    Production compose is different and already has a proper sessions mount —
    do not edit the repo copy without confirming with the user.
 2. Live tests against Emporia + SolarEdge have not been run yet this session.
-   Next step: run them and interpret output (pv/load/grid sanity check).
-3. Dead code / minor cleanups (not blocking, not yet applied):
-   - ChargingAutomation.py: unused ENABLE_NIGHT_MANAGEMENT constant;
-     commented-out hysteresis block referencing undefined last_action_times
-     and MIN_ACTION_INTERVAL; unused `soc = 0`; duplicated comment line in
-     allocate_solar_watts.
-   - RivianAPI.set_schedule_custom: `"amperage": self.AMPS_MAX` is set then
-     overwritten in both branches (dead initial value).
-   - RivianAPI.init_vehicle_info: will KeyError if
-     data['data']['vehicleState'] is None (chargerStatus check happens after
-     indexing vehicleState).
-   - TeslaAPI._run_async: `except (OAuthExpired, Exception)` is redundant.
-   - HubitatAPI.update_info_device_message: message is embedded in the URL
-     unencoded; should use requests params or urllib.parse.quote.
-4. No tests yet for ChargingAutomation.py (allocate_solar_watts,
-   watts_to_amps, is_night_time, get_automation_mode) or for
-   HubitatAPI/RivianAPI/TeslaAPI.
+   Next step: run the SolarEdge-only live test and interpret pv/load/grid.
+3. Dead code / minor cleanups — DONE in 7c575b6. Notes:
+   - RivianAPI.set_schedule_custom: the dead initial `"amperage": self.AMPS_MAX`
+     was already gone in the current file; both branches set it explicitly.
+   - HubitatAPI.update_info_device_message: message was already passed via
+     `params={'value': message}` (requests URL-encodes it); only a clarifying
+     comment was added.
+4. Tests for ChargingAutomation.py added (tests/test_charging_automation.py)
+   covering allocate_solar_watts, watts_to_amps, is_night_time,
+   get_automation_mode. All passing after d8fdc16 + 05e7d65.
+   Still no tests for HubitatAPI / RivianAPI / TeslaAPI.
+5. is_night_time bug fixed in 05e7d65: same-day windows (start <= end) were
+   previously treated as wrapping windows, causing hour=0 to be flagged as
+   night for a 01:00–05:00 window.
 
 ## Conventions
 
