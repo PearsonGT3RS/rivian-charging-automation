@@ -18,6 +18,10 @@ class PowerFlow:
     load: float  # Load consumption in watts
 
 
+class LoadUnavailableError(RuntimeError):
+    """Raised when a load_provider was supplied but could not return a value."""
+
+
 class SolarEdgeAPI:
     """
     SolarEdge v2 API client (OAuth 2.0 Bearer token).
@@ -202,21 +206,24 @@ class SolarEdgeAPI:
         Compute power flow from v2 PV data plus an external load source.
 
         v2 Free tier does not expose load or grid directly. If load_provider is
-        supplied (a callable returning load in watts, or None on failure), we
-        compute grid = load - pv. If load_provider is None or returns None, we
-        fall back to assuming load == pv (grid == 0) and log a warning.
+        supplied (a callable returning load in watts), we compute
+        grid = load - pv. If the provider returns None, LoadUnavailableError is
+        raised so the caller can abort rather than charge blind. If no provider
+        is supplied, we fall back to assuming load == pv (grid == 0).
         """
         pv = self.get_current_power()
         if pv is None:
             return None
 
-        load = None
         if load_provider is not None:
             load = load_provider()
-
-        if load is None:
+            if load is None:
+                raise LoadUnavailableError(
+                    'load_provider returned None; cannot compute grid'
+                )
+        else:
             logger.warning(
-                'SolarEdge v2: load unavailable; assuming load == pv (grid == 0)'
+                'SolarEdge v2: no load_provider; assuming load == pv (grid == 0)'
             )
             load = pv
 

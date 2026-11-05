@@ -7,7 +7,7 @@ from Config import Config
 from HomeAssistantAPI import HomeAssistantAPI
 from RivianAPI import RivianAPI
 from TeslaAPI import TeslaAPI
-from SolarEdgeAPI import SolarEdgeAPI
+from SolarEdgeAPI import SolarEdgeAPI, LoadUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -298,19 +298,14 @@ def run_charging_automation():
 
     # Daytime Solar Logic continues here...
     # 1. Check Power Flow before polling vehicle sensors
-    power_flow = solaredge.get_current_power_flow(load_provider=load_provider)
+    try:
+        power_flow = solaredge.get_current_power_flow(load_provider=load_provider)
+    except LoadUnavailableError:
+        logger.error('Emporia load unavailable; aborting cycle for safety')
+        return
     if power_flow is None:
         logger.error('Failed to get power flow data')
         return
-
-    # If HA/Emporia was configured but load is unavailable, abort the cycle
-    # rather than charging blind.
-    if load_provider is not None and power_flow.load == power_flow.pv:
-        # SolarEdgeAPI falls back to load == pv when the provider returns None.
-        # Distinguish a genuine coincidence from a failure by re-checking.
-        if load_provider() is None:
-            logger.error('Emporia load unavailable; aborting cycle for safety')
-            return
 
     # available_power: positive = surplus, negative = grid draw
     available_power = -power_flow.grid
