@@ -16,7 +16,6 @@ VOLTS = 240                  # nominal charging voltage
 CHANGE_THRESHOLD_WATTS = 500 # ignore fluctuations smaller than ~2A Rivian step
 RIVIAN_MIN_WATTS = RivianAPI.AMPS_MIN * VOLTS  # 8A * 240V = 1920W
 TESLA_MIN_WATTS = TeslaAPI.AMPS_MIN * VOLTS    # 5A * 240V = 1200W
-# --- NEW: BMS Hysteresis Buffer ---
 BMS_BUFFER_PCT = 2           # % buffer to prevent waking for minor battery sag
 
 class AutomationMode(Enum):
@@ -73,14 +72,14 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
 
     # Single vehicle: all available solar goes to it
     if rivian_connected and not tesla_connected:
-        if rivian_soc >= 100: # <--- NEW FIX: Respect 100% limit
+        if rivian_soc >= 100:
             return 0.0, 0.0
         if rivian_soc > SOC_THRESHOLD and solar_for_ev <= 0:
             return 0.0, 0.0
         return total, 0.0
 
     if tesla_connected and not rivian_connected:
-        if tesla_soc >= 100: # <--- NEW FIX: Respect 100% limit
+        if tesla_soc >= 100:
             return 0.0, 0.0
         if tesla_soc > SOC_THRESHOLD and solar_for_ev <= 0:
             return 0.0, 0.0
@@ -231,8 +230,7 @@ def run_charging_automation():
                 
                 # Fetch the SOC for whichever vehicle is currently looping
                 soc = vehicle.get_battery_level() or 0
-                
-                # Sleep-aware check: Wake the car if we need to check SOC for night charging
+
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
                     if soc == 0: 
