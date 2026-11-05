@@ -136,7 +136,7 @@ class TeslaAPI:
                     return None
                     
                 except Exception as e:
-                    # PROPER FIX: Explicitly catch OAuthExpired class or string matches
+                    # OAuthExpired is a subclass of Exception; also match string hints
                     is_auth_error = isinstance(e, OAuthExpired) or "401" in str(e).lower() or "unauthorized" in str(e).lower()
                     
                     if is_auth_error:
