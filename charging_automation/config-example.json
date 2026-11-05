@@ -1,6 +1,16 @@
 {
     "rivian-user": "your rivian username",
     "rivian-pass": "your rivian password",
-    "solaredge-api-key":  "your SolarEdge Admin API key for version 1.0",
-    "solaredge-site-id":  "your SolarEdge SiteID from the Admin console"
+    "solaredge-client-id": "your SolarEdge v2 OAuth client ID",
+    "solaredge-client-secret": "your SolarEdge v2 OAuth client secret",
+    "solaredge-site-id": "your SolarEdge SiteID from the Admin console",
+    "solaredge-redirect-uri": "http://localhost:8080/oauth/callback",
+    "homeassistant-url": "http://homeassistant.local:8123",
+    "homeassistant-token": "your long-lived Home Assistant access token",
+    "emporia-load-entities": [
+        "sensor.emporia_vue_channel_1_power",
+        "sensor.emporia_vue_channel_2_power"
+    ],
+    "night-time-start": 21,
+    "night-time-end": 7
 }
