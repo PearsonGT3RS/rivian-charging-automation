@@ -197,22 +197,32 @@ class SolarEdgeAPI:
             logger.error('Error getting current power: %s', e)
             return None
 
-    def get_current_power_flow(self):
+    def get_current_power_flow(self, load_provider=None):
         """
-        Approximate power flow from v2 data.
+        Compute power flow from v2 PV data plus an external load source.
 
-        v2 Free tier does not expose load or grid directly. We return PV from
-        the latest 15-min sample and assume load == pv (grid == 0). Callers
-        that need true grid/load must supply a separate meter source.
+        v2 Free tier does not expose load or grid directly. If load_provider is
+        supplied (a callable returning load in watts, or None on failure), we
+        compute grid = load - pv. If load_provider is None or returns None, we
+        fall back to assuming load == pv (grid == 0) and log a warning.
         """
         pv = self.get_current_power()
         if pv is None:
             return None
-        load = pv  # unknown; assume balanced
+
+        load = None
+        if load_provider is not None:
+            load = load_provider()
+
+        if load is None:
+            logger.warning(
+                'SolarEdge v2: load unavailable; assuming load == pv (grid == 0)'
+            )
+            load = pv
+
         grid = load - pv
         logger.debug(
-            'SolarEdge v2: pv=%.0fW load=%.0fW (assumed) grid=%.0fW',
-            pv, load, grid,
+            'SolarEdge v2: pv=%.0fW load=%.0fW grid=%.0fW', pv, load, grid,
         )
         return PowerFlow(pv=pv, grid=grid, load=load)
 
