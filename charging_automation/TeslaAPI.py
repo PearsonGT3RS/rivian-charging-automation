@@ -1,13 +1,32 @@
 import logging
 import json
 import asyncio
-import aiohttp
 import time
-from tesla_fleet_api import TeslaFleetApi
-from tesla_fleet_api.exceptions import VehicleOffline, OAuthExpired
-from tesla_fleet_api.tesla.vehicle.signed import VehicleSigned
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
+
+try:
+    import aiohttp
+    from tesla_fleet_api import TeslaFleetApi
+    from tesla_fleet_api.exceptions import VehicleOffline, OAuthExpired
+    from tesla_fleet_api.tesla.vehicle.signed import VehicleSigned
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.backends import default_backend
+    _TESLA_DEPS_AVAILABLE = True
+    _TESLA_DEPS_ERROR = None
+except ImportError as _e:  # pragma: no cover - exercised only when deps missing
+    aiohttp = None
+    TeslaFleetApi = None
+    VehicleSigned = None
+    serialization = None
+    default_backend = None
+
+    class VehicleOffline(Exception):
+        pass
+
+    class OAuthExpired(Exception):
+        pass
+
+    _TESLA_DEPS_AVAILABLE = False
+    _TESLA_DEPS_ERROR = _e
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +35,11 @@ class TeslaAPI:
     AMPS_MAX = 48
     
     def __init__(self, config_file="/app/config.json", session_file="/sessions/tesla-session.json"):
+        if not _TESLA_DEPS_AVAILABLE:
+            raise RuntimeError(
+                'TeslaAPI requires the tesla-fleet-api and cryptography packages. '
+                'Install them with: pip install -r requirements.txt'
+            ) from _TESLA_DEPS_ERROR
         self.config_file = config_file
         self.session_file = session_file
         self.private_key_path = "/app/private-key.pem"
