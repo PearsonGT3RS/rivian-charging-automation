@@ -16,9 +16,6 @@ VOLTS = 240                  # nominal charging voltage
 CHANGE_THRESHOLD_WATTS = 500 # ignore fluctuations smaller than ~2A Rivian step
 RIVIAN_MIN_WATTS = RivianAPI.AMPS_MIN * VOLTS  # 8A * 240V = 1920W
 TESLA_MIN_WATTS = TeslaAPI.AMPS_MIN * VOLTS    # 5A * 240V = 1200W
-# --- NEW: Night Kill-Switch ---
-# pull enable_night_management from config with a default of True to preserve existing behavior
-ENABLE_NIGHT_MANAGEMENT = True
 # --- NEW: BMS Hysteresis Buffer ---
 BMS_BUFFER_PCT = 2           # % buffer to prevent waking for minor battery sag
 
@@ -74,7 +71,6 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
     if not rivian_connected and not tesla_connected:
         return 0.0, 0.0
 
-    # Single vehicle: all available solar goes to it
     # Single vehicle: all available solar goes to it
     if rivian_connected and not tesla_connected:
         if rivian_soc >= 100: # <--- NEW FIX: Respect 100% limit
@@ -147,8 +143,6 @@ def apply_charging(vehicle, target_watts, increment, vehicle_name):
     # 1. STOP LOGIC: Below minimum and currently charging
     if target_amps < vehicle.AMPS_MIN:
         if is_currently_charging:
-            # Check Hysteresis: Has it been 5 minutes since the last start/stop?
-            #if (now - last_action_times[vehicle_name]) > MIN_ACTION_INTERVAL:
             logger.info(f'{vehicle_name}: Below minimum. Stopping charge.')
             if vehicle_name == "Tesla":
                 vehicle.charge_stop() # Use Signed Stop for Highland
@@ -185,7 +179,6 @@ def run_charging_automation():
         logger.info('Automation is OFF')
         return
     
-    soc = 0
     config = Config('/app/config.json')
     rivian = RivianAPI(config, '/sessions/rivian-session.json')
     tesla = TeslaAPI('/app/config.json', '/sessions/tesla-session.json')

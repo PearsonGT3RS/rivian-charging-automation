@@ -111,7 +111,7 @@ class TeslaAPI:
                     logger.debug("Tesla is asleep. Safely returning None.")
                     return None
                     
-                except (OAuthExpired, Exception) as e:
+                except Exception as e:
                     # PROPER FIX: Explicitly catch OAuthExpired class or string matches
                     is_auth_error = isinstance(e, OAuthExpired) or "401" in str(e).lower() or "unauthorized" in str(e).lower()
                     
