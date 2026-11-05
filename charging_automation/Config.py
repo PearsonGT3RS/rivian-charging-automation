@@ -12,6 +12,9 @@ class Config:
         self.solaredge_client_secret = None
         self.solaredge_site_id = None
         self.solaredge_redirect_uri = None
+        self.homeassistant_url = None
+        self.homeassistant_token = None
+        self.emporia_load_entities = []
         self.night_time_start = None
         self.night_time_end = None
 
@@ -23,6 +26,9 @@ class Config:
             self.solaredge_client_secret = data['solaredge-client-secret']
             self.solaredge_site_id = data['solaredge-site-id']
             self.solaredge_redirect_uri = data.get('solaredge-redirect-uri', 'http://localhost:8080/oauth/callback')
+            self.homeassistant_url = data.get('homeassistant-url')
+            self.homeassistant_token = data.get('homeassistant-token')
+            self.emporia_load_entities = data.get('emporia-load-entities', [])
             self.night_time_start = data['night-time-start']
             self.night_time_end = data['night-time-end']
 

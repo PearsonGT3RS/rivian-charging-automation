@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from enum import Enum
 from Config import Config
+from HomeAssistantAPI import HomeAssistantAPI
 from RivianAPI import RivianAPI
 from TeslaAPI import TeslaAPI
 from SolarEdgeAPI import SolarEdgeAPI
@@ -190,6 +191,16 @@ def run_charging_automation():
     tesla = TeslaAPI('/app/config.json', '/sessions/tesla-session.json')
     solaredge = SolarEdgeAPI('/app/config.json')
 
+    # Build a load provider from Home Assistant / Emporia Vue sensors.
+    # If HA is not configured, load_provider stays None and SolarEdgeAPI
+    # falls back to assuming load == pv (grid == 0).
+    load_provider = None
+    if config.homeassistant_url and config.homeassistant_token and config.emporia_load_entities:
+        ha = HomeAssistantAPI(config.homeassistant_url, config.homeassistant_token)
+
+        def load_provider():
+            return ha.get_sensor_sum(config.emporia_load_entities)
+
     rivian_connected = rivian.is_charger_connected()
     tesla_connected = tesla.is_charger_connected()
 
@@ -287,10 +298,19 @@ def run_charging_automation():
 
     # Daytime Solar Logic continues here...
     # 1. Check Power Flow before polling vehicle sensors
-    power_flow = solaredge.get_current_power_flow()
+    power_flow = solaredge.get_current_power_flow(load_provider=load_provider)
     if power_flow is None:
         logger.error('Failed to get power flow data')
         return
+
+    # If HA/Emporia was configured but load is unavailable, abort the cycle
+    # rather than charging blind.
+    if load_provider is not None and power_flow.load == power_flow.pv:
+        # SolarEdgeAPI falls back to load == pv when the provider returns None.
+        # Distinguish a genuine coincidence from a failure by re-checking.
+        if load_provider() is None:
+            logger.error('Emporia load unavailable; aborting cycle for safety')
+            return
 
     # available_power: positive = surplus, negative = grid draw
     available_power = -power_flow.grid
