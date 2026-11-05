@@ -143,12 +143,13 @@ class RivianAPI:
 
         data = response.json()
 
-        if data['data']['vehicleState']['chargerStatus'] == None:
+        vehicle_state = (data.get('data') or {}).get('vehicleState')
+        if not vehicle_state or vehicle_state.get('chargerStatus') is None:
             logger.info('Rivian vehicle data missing — might be in service mode')
             return
 
-        self.charging_status = data['data']['vehicleState']['chargerStatus']['value']
-        self.battery_level = data['data']['vehicleState']['batteryLevel']['value']
+        self.charging_status = vehicle_state['chargerStatus']['value']
+        self.battery_level = vehicle_state['batteryLevel']['value']
         logger.info('Rivian vehicle data loaded')
 
     def login(self):
@@ -216,7 +217,6 @@ class RivianAPI:
                 "startTime": 0,
                 "duration": 1440, # 24-hour window
                 "location": {},
-                "amperage": self.AMPS_MAX,
                 "enabled": True,
                 "weekDays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
             }
