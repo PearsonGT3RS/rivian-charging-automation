@@ -65,12 +65,22 @@ class TestWattsToAmps(unittest.TestCase):
         self.assertEqual(watts_to_amps(100, 1), 0)
 
 
+class _FakeDatetime:
+    """Stand-in for the datetime class so we can control .now()."""
+
+    _now = None
+
+    @classmethod
+    def now(cls):
+        return cls._now
+
+
 class TestIsNightTime(unittest.TestCase):
 
     def _at_hour(self, hour):
         fake_now = datetime(2026, 1, 1, hour, 0, 0)
-        return mock.patch.object(ca, 'datetime', wraps=datetime) if False else \
-            mock.patch.object(ca.datetime, 'now', return_value=fake_now)
+        _FakeDatetime._now = fake_now
+        return mock.patch.object(ca, 'datetime', _FakeDatetime)
 
     def test_wraps_midnight(self):
         cfg = _FakeConfig(start=21, end=7)
