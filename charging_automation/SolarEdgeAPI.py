@@ -195,9 +195,13 @@ class SolarEdgeAPI:
                 'unit': 'W',
             })
             values = data.get('values') or []
-            if not values:
-                return None
-            return float(values[-1]['value'])
+            # The most recent bucket can be null while the inverter is still
+            # reporting. Walk backwards to the newest non-null sample.
+            for sample in reversed(values):
+                value = sample.get('value')
+                if value is not None:
+                    return float(value)
+            return None
         except requests.exceptions.RequestException as e:
             logger.error('Error getting current power: %s', e)
             return None
