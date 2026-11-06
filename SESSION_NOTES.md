@@ -61,12 +61,14 @@ Requires /app/config.json with v2 keys and /sessions/solaredge-token.json.
 Bootstrap once if needed:
     cd charging_automation && python SolarEdgeAPI.py bootstrap /app/config.json <authorization_code>
 
-SolarEdge-only live run (next step):
+SolarEdge-only live run — PASSED 2026-11-06:
     cd charging_automation && SOLAREDGE_LIVE=1 python -m unittest tests.test_solaredge.TestSolarEdgeLive -v
-Expected output:
-    [LIVE] SolarEdge current PV power: <N> W
-    [LIVE] pv=<N>W load=<N>W grid=<N>W
-Interpret pv/load/grid after the run (grid sign: positive = import, negative = export).
+Observed output:
+    [LIVE] SolarEdge current PV power: 2633 W
+    [LIVE] pv=2633W load=8644W grid=6011W
+Interpretation: grid is positive (importing ~6kW) — expected mid-day with
+EV charging + house load exceeding PV. Sign convention confirmed:
+positive = import, negative = export.
 
 ## Commits this session
 
@@ -83,16 +85,18 @@ Interpret pv/load/grid after the run (grid sign: positive = import, negative = e
 - 05e7d65 — fix: handle same-day night window in is_night_time
   (start <= end now uses `start <= hour < end`; wrapping window still uses
   `hour >= start or hour < end`)
+- 5e1be36 — fix: format SolarEdge v2 power timestamps as ISO-8601 UTC instants
+  (v2 /power rejects bare local timestamps with 400 "Failed to convert ...
+  to required type [Instant]"; now appends 'Z' to from/to)
 
 ## Known gaps / follow-ups
 
 1. docker-compose.yml in the repo does NOT mount /sessions or /app/config.json.
    Production compose is different and already has a proper sessions mount —
    do not edit the repo copy without confirming with the user.
-2. Live tests against Emporia + SolarEdge have not been run yet.
-   Next step: run the SolarEdge-only live test and interpret pv/load/grid.
-   (2026-11-06 session: command + prerequisites were provided to the user;
-   the run itself was not executed in-session.)
+2. SolarEdge-only live test PASSED 2026-11-06 (pv=2633W load=8644W grid=6011W).
+   Full live suite (HA + SolarEdge) still pending:
+       cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
 3. Dead code / minor cleanups — DONE in 7c575b6. Notes:
    - RivianAPI.set_schedule_custom: the dead initial `"amperage": self.AMPS_MAX`
      was already gone in the current file; both branches set it explicitly.
@@ -112,11 +116,9 @@ Interpret pv/load/grid after the run (grid sign: positive = import, negative = e
 
 ## Next session
 
-1. Run the SolarEdge-only live test and interpret pv/load/grid:
-       cd charging_automation && SOLAREDGE_LIVE=1 python -m unittest tests.test_solaredge.TestSolarEdgeLive -v
-2. If green, run the full live suite (HA + SolarEdge):
+1. Run the full live suite (HA + SolarEdge):
        cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
-3. Add unit tests for HubitatAPI / RivianAPI / TeslaAPI (files already in chat).
+2. Add unit tests for HubitatAPI / RivianAPI / TeslaAPI (files already in chat).
    Follow existing conventions: unittest, sys.path insert, mock requests /
    _run_async, no network.
 
