@@ -66,10 +66,11 @@ class HubitatAPI:
         self.update_info_device_message(message)
 
     def update_info_device_message(self, message):
-        url = self.SET_VARIABLE_URL.format(self.host, self.api_id, self.info_device_id, message, self.token)
+        url = self.SET_VARIABLE_URL.format(self.host, self.api_id, self.info_device_id, '', self.token)
 
         logger.info('Sending info to Hubitat')
-        response = requests.get(url)
+        # Pass the message via params so requests URL-encodes it safely.
+        response = requests.get(url, params={'value': message})
 
         if response.status_code != 200:
             logger.error('Failed to make Hubitat request: {}'.format(response.text))

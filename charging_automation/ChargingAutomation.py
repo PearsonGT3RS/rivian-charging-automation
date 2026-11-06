@@ -4,9 +4,10 @@ import time
 from datetime import datetime
 from enum import Enum
 from Config import Config
+from HomeAssistantAPI import HomeAssistantAPI
 from RivianAPI import RivianAPI
 from TeslaAPI import TeslaAPI
-from SolarEdgeAPI import SolarEdgeAPI
+from SolarEdgeAPI import SolarEdgeAPI, LoadUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +16,6 @@ VOLTS = 240                  # nominal charging voltage
 CHANGE_THRESHOLD_WATTS = 500 # ignore fluctuations smaller than ~2A Rivian step
 RIVIAN_MIN_WATTS = RivianAPI.AMPS_MIN * VOLTS  # 8A * 240V = 1920W
 TESLA_MIN_WATTS = TeslaAPI.AMPS_MIN * VOLTS    # 5A * 240V = 1200W
-# --- NEW: Night Kill-Switch ---
-# pull enable_night_management from config with a default of True to preserve existing behavior
-ENABLE_NIGHT_MANAGEMENT = True
-# --- NEW: BMS Hysteresis Buffer ---
 BMS_BUFFER_PCT = 2           # % buffer to prevent waking for minor battery sag
 
 class AutomationMode(Enum):
@@ -29,8 +26,14 @@ class AutomationMode(Enum):
 
 def is_night_time(config):
     current_hour = datetime.now().hour
-    logger.info('Start Night: %d ; End Night: %d', config.night_time_start, config.night_time_end)
-    return current_hour < config.night_time_end or current_hour >= config.night_time_start
+    start = config.night_time_start
+    end = config.night_time_end
+    logger.info('Start Night: %d ; End Night: %d', start, end)
+    if start <= end:
+        # Same-day window, e.g. 01:00–05:00
+        return start <= current_hour < end
+    # Wraps midnight, e.g. 21:00–07:00
+    return current_hour >= start or current_hour < end
 
 
 def get_automation_mode(hubitat):
@@ -74,16 +77,15 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
         return 0.0, 0.0
 
     # Single vehicle: all available solar goes to it
-    # Single vehicle: all available solar goes to it
     if rivian_connected and not tesla_connected:
-        if rivian_soc >= 100: # <--- NEW FIX: Respect 100% limit
+        if rivian_soc >= 100:
             return 0.0, 0.0
         if rivian_soc > SOC_THRESHOLD and solar_for_ev <= 0:
             return 0.0, 0.0
         return total, 0.0
 
     if tesla_connected and not rivian_connected:
-        if tesla_soc >= 100: # <--- NEW FIX: Respect 100% limit
+        if tesla_soc >= 100:
             return 0.0, 0.0
         if tesla_soc > SOC_THRESHOLD and solar_for_ev <= 0:
             return 0.0, 0.0
@@ -146,8 +148,6 @@ def apply_charging(vehicle, target_watts, increment, vehicle_name):
     # 1. STOP LOGIC: Below minimum and currently charging
     if target_amps < vehicle.AMPS_MIN:
         if is_currently_charging:
-            # Check Hysteresis: Has it been 5 minutes since the last start/stop?
-            #if (now - last_action_times[vehicle_name]) > MIN_ACTION_INTERVAL:
             logger.info(f'{vehicle_name}: Below minimum. Stopping charge.')
             if vehicle_name == "Tesla":
                 vehicle.charge_stop() # Use Signed Stop for Highland
@@ -184,11 +184,20 @@ def run_charging_automation():
         logger.info('Automation is OFF')
         return
     
-    soc = 0
     config = Config('/app/config.json')
     rivian = RivianAPI(config, '/sessions/rivian-session.json')
     tesla = TeslaAPI('/app/config.json', '/sessions/tesla-session.json')
     solaredge = SolarEdgeAPI('/app/config.json')
+
+    # Build a load provider from Home Assistant / Emporia Vue sensors.
+    # If HA is not configured, load_provider stays None and SolarEdgeAPI
+    # falls back to assuming load == pv (grid == 0).
+    load_provider = None
+    if config.homeassistant_url and config.homeassistant_token and config.emporia_load_entities:
+        ha = HomeAssistantAPI(config.homeassistant_url, config.homeassistant_token)
+
+        def load_provider():
+            return ha.get_sensor_sum(config.emporia_load_entities)
 
     rivian_connected = rivian.is_charger_connected()
     tesla_connected = tesla.is_charger_connected()
@@ -227,8 +236,7 @@ def run_charging_automation():
                 
                 # Fetch the SOC for whichever vehicle is currently looping
                 soc = vehicle.get_battery_level() or 0
-                
-                # Sleep-aware check: Wake the car if we need to check SOC for night charging
+
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
                     if soc == 0: 
@@ -287,7 +295,11 @@ def run_charging_automation():
 
     # Daytime Solar Logic continues here...
     # 1. Check Power Flow before polling vehicle sensors
-    power_flow = solaredge.get_current_power_flow()
+    try:
+        power_flow = solaredge.get_current_power_flow(load_provider=load_provider)
+    except LoadUnavailableError:
+        logger.error('Emporia load unavailable; aborting cycle for safety')
+        return
     if power_flow is None:
         logger.error('Failed to get power flow data')
         return

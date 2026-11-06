@@ -12,3 +12,7 @@ charging_automation/app/sessions/tesla-session.json
 charging_automation/app/config.json
 charging_automation/app/private-key.pem
 .aider*
+access*
+refresh*
+se.sh
+deepseek*
