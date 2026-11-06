@@ -1,11 +1,14 @@
 import logging
 import sys
 import time
-import traceback # <--- NEW: Import the traceback library
+import traceback
 from ChargingAutomation import run_charging_automation
 
 
 logger = logging.getLogger(__name__)
+
+ACTIVE_ITERATION_SECONDS = 5 * 60
+IDLE_ITERATION_SECONDS = 30 * 60
 
 
 def setup_logging():
@@ -19,26 +22,26 @@ def setup_logging():
 def main():
     setup_logging()
 
-    iteration_time = 5 * 60
-
-    logger.info('Charging Automation Started: run every {} seconds'.format(iteration_time))
+    logger.info(
+        'Charging Automation Started: active interval {}s, idle interval {}s'.format(
+            ACTIVE_ITERATION_SECONDS, IDLE_ITERATION_SECONDS
+        )
+    )
 
     while True:
         try:
             is_actively_charging = run_charging_automation()
-            
+
             if is_actively_charging:
-                time.sleep(iteration_time)  
+                time.sleep(ACTIVE_ITERATION_SECONDS)
             else:
-                time.sleep(1800) 
-                
+                time.sleep(IDLE_ITERATION_SECONDS)
+
         except Exception as e:
-            # --- NEW: Print the full stack trace to the logs ---
-            logger.error(f"Automation crashed: {e}")
+            logger.error('Automation crashed: {}'.format(e))
             logger.error(traceback.format_exc())
-            logger.info('Sleeping for {} seconds...'.format(iteration_time))
-            time.sleep(iteration_time)
-            run_charging_automation()
+            logger.info('Sleeping for {} seconds...'.format(ACTIVE_ITERATION_SECONDS))
+            time.sleep(ACTIVE_ITERATION_SECONDS)
         
 
 
