@@ -2,7 +2,7 @@ import logging
 import sys
 import time
 import traceback
-from ChargingAutomation import run_charging_automation
+from ChargingAutomation import run_charging_automation, CycleResult
 
 
 logger = logging.getLogger(__name__)
@@ -31,10 +31,12 @@ def main():
 
     while True:
         try:
-            is_actively_charging = run_charging_automation()
+            result = run_charging_automation()
 
-            if is_actively_charging:
+            if result == CycleResult.NIGHT_ACTIVE:
                 time.sleep(ACTIVE_ITERATION_SECONDS)
+            elif result == CycleResult.DAYTIME_ACTIVE:
+                time.sleep(DAYTIME_ACTIVE_ITERATION_SECONDS)
             else:
                 time.sleep(IDLE_ITERATION_SECONDS)
 

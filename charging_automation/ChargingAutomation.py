@@ -24,6 +24,13 @@ class AutomationMode(Enum):
     SOLAR_ONLY = 2   # solar only, no night charging
 
 
+class CycleResult(Enum):
+    """Outcome of a single automation cycle, used by main.py to pick a sleep interval."""
+    IDLE = 0                # nothing to do; sleep the long idle interval
+    NIGHT_ACTIVE = 1        # actively charging at night; poll frequently
+    DAYTIME_ACTIVE = 2      # daytime solar cycle; poll at the daytime interval
+
+
 def is_night_time(config):
     current_hour = datetime.now().hour
     start = config.night_time_start
@@ -182,7 +189,7 @@ def run_charging_automation():
     logger.info('Automation mode: %s', mode)
     if mode == AutomationMode.OFF:
         logger.info('Automation is OFF')
-        return
+        return CycleResult.IDLE
     
     config = Config('/app/config.json')
     rivian = RivianAPI(config, '/sessions/rivian-session.json')
@@ -208,7 +215,7 @@ def run_charging_automation():
         logger.info('No chargers plugged in')
         if hubitat:
             hubitat.set_info_message('Charging: not plugged in', 0, 0)
-        return
+        return CycleResult.IDLE
 
 
     # --- NIGHT TIME HANDLING ---
@@ -217,7 +224,7 @@ def run_charging_automation():
         # --- NEW: Early exit if night management is disabled ---
         if not getattr(config, 'enable_night_management', True):
             logger.info('Night management is disabled. Ignoring vehicles until morning.')
-            return False # Tells main.py to sleep for 30 minutes
+            return CycleResult.IDLE
         
         if mode == AutomationMode.SOLAR_ONLY:
             logger.info('Solar-only mode: ensuring charging is stopped for the night')
@@ -287,9 +294,9 @@ def run_charging_automation():
         try:
             actively_charging = (rivian_connected and rivian.is_charging()) or \
                                 (tesla_connected and tesla.is_charging())
-            return actively_charging
+            return CycleResult.NIGHT_ACTIVE if actively_charging else CycleResult.IDLE
         except Exception:
-            return True # Failsafe: stay on 5-min loops if API fails
+            return CycleResult.NIGHT_ACTIVE  # Failsafe: stay on the short interval if API fails
             
     # --- END NIGHT TIME HANDLING ---
 
@@ -299,10 +306,10 @@ def run_charging_automation():
         power_flow = solaredge.get_current_power_flow(load_provider=load_provider)
     except LoadUnavailableError:
         logger.error('Emporia load unavailable; aborting cycle for safety')
-        return
+        return CycleResult.IDLE
     if power_flow is None:
         logger.error('Failed to get power flow data')
-        return
+        return CycleResult.IDLE
 
     # available_power: positive = surplus, negative = grid draw
     available_power = -power_flow.grid
@@ -400,7 +407,7 @@ def run_charging_automation():
     # (available_power is the current grid export/import)
     if not must_stop and abs(available_power) < CHANGE_THRESHOLD_WATTS:
         logger.info('Power change %.0fW below threshold, skipping update', available_power)
-        return
+        return CycleResult.DAYTIME_ACTIVE
 
     # --- END INTEGRATED LOGIC PIECE ---
 
@@ -416,8 +423,7 @@ def run_charging_automation():
         apply_charging(tesla, tesla_w, 1, 'Tesla')
 
     logger.info('Automation cycle complete')
-    
-    # --- NEW FIX: Always monitor solar ---
-    # Because this code block is only reached during the day, we must ALWAYS 
-    # return True so main.py checks solar production every 5 minutes.
-    return True
+
+    # Daytime cycles always return DAYTIME_ACTIVE so main.py polls solar
+    # production at the daytime interval.
+    return CycleResult.DAYTIME_ACTIVE
