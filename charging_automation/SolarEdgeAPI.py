@@ -42,6 +42,10 @@ class SolarEdgeAPI:
     DEFAULT_TOKEN_FILE = "/sessions/solaredge-token.json"
     # Refresh proactively if the access token has less than this many seconds left.
     REFRESH_SKEW_SECONDS = 300
+    # Refresh tokens expire after 14 days of non-use. During night hours we
+    # don't need live data, but we still refresh periodically to keep the
+    # token chain alive. 7 days leaves a comfortable margin.
+    KEEPALIVE_INTERVAL_SECONDS = 7 * 24 * 60 * 60
 
     def __init__(self, credentials_file, token_file=None):
         """Initialize with credentials file path and (optional) token cache path."""
@@ -126,6 +130,29 @@ class SolarEdgeAPI:
         if not self._token_is_fresh():
             self._refresh_access_token()
 
+    def _maybe_keepalive_refresh(self):
+        """
+        Refresh the token only if it hasn't been refreshed in a while.
+
+        Used during night hours when we don't need live data but must keep the
+        refresh token from expiring (v2 invalidates refresh tokens after 14
+        days of non-use). No-op if the token file is missing or already fresh
+        enough that a normal daytime cycle would refresh it anyway.
+        """
+        if not self._refresh_token:
+            return
+        age = time.time() - self._access_expires_at
+        # _access_expires_at is the *expiry* time, so a token refreshed N
+        # seconds ago has age = N - expires_in. Compare against the keepalive
+        # interval plus the token lifetime to get "time since last refresh".
+        if age < (self.KEEPALIVE_INTERVAL_SECONDS - 7200):
+            return
+        logger.info('SolarEdge keepalive: refreshing token to prevent 14-day expiry')
+        try:
+            self._refresh_access_token()
+        except Exception as e:
+            logger.warning('SolarEdge keepalive refresh failed: %s', e)
+
     def _auth_headers(self):
         self._ensure_token()
         return {'Authorization': f'Bearer {self._access_token}'}
@@ -195,9 +222,13 @@ class SolarEdgeAPI:
                 'unit': 'W',
             })
             values = data.get('values') or []
-            if not values:
-                return None
-            return float(values[-1]['value'])
+            # The most recent bucket can be null while the inverter is still
+            # reporting. Walk backwards to the newest non-null sample.
+            for sample in reversed(values):
+                value = sample.get('value')
+                if value is not None:
+                    return float(value)
+            return None
         except requests.exceptions.RequestException as e:
             logger.error('Error getting current power: %s', e)
             return None

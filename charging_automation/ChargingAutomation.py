@@ -194,7 +194,6 @@ def run_charging_automation():
     config = Config('/app/config.json')
     rivian = RivianAPI(config, '/sessions/rivian-session.json')
     tesla = TeslaAPI('/app/config.json', '/sessions/tesla-session.json')
-    solaredge = SolarEdgeAPI('/app/config.json')
 
     # Build a load provider from Home Assistant / Emporia Vue sensors.
     # If HA is not configured, load_provider stays None and SolarEdgeAPI
@@ -220,6 +219,14 @@ def run_charging_automation():
 
     # --- NIGHT TIME HANDLING ---
     if is_night_time(config):
+
+        # Keep the SolarEdge refresh token alive without polling live data.
+        # v2 invalidates refresh tokens after 14 days of non-use; this fires
+        # at most once per KEEPALIVE_INTERVAL_SECONDS (7 days).
+        try:
+            SolarEdgeAPI('/app/config.json')._maybe_keepalive_refresh()
+        except Exception as e:
+            logger.warning('SolarEdge keepalive check failed: %s', e)
 
         # --- NEW: Early exit if night management is disabled ---
         if not getattr(config, 'enable_night_management', True):
@@ -301,6 +308,10 @@ def run_charging_automation():
     # --- END NIGHT TIME HANDLING ---
 
     # Daytime Solar Logic continues here...
+    # Construct the SolarEdge client only in the daytime branch so we don't
+    # trigger an overnight token refresh while night management is active.
+    solaredge = SolarEdgeAPI('/app/config.json')
+
     # 1. Check Power Flow before polling vehicle sensors
     try:
         power_flow = solaredge.get_current_power_flow(load_provider=load_provider)
