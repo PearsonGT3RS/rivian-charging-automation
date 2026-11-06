@@ -2,6 +2,7 @@
 
 Last updated: 2026-11-06
 Repo: charging_automation (SolarEdge v2 migration)
+Branch: solaredge-v2 (PR pending to main/master)
 
 ## How to resume
 
@@ -95,12 +96,21 @@ positive = import, negative = export.
 - a129941 — fix: remove extra mock response in login session test
   (first init_user_info() short-circuits without a POST when no session
   file exists, so the side_effect list had one response too many)
+- c88c33f — docs: update session notes with test results and next steps
+- 76e09e4 — docs: add PR body for SolarEdge v2 migration (pr-body.md)
+- 79afadf — chore: add se.sh to gitignore
+- (uncommitted) build: rewrite Dockerfile for slim-bookworm, non-root user,
+  and /sessions mount (python:3.12-slim-bookworm, app user, playwright
+  chromium, /app + /sessions dirs)
 
 ## Known gaps / follow-ups
 
 1. docker-compose.yml in the repo does NOT mount /sessions or /app/config.json.
    Production compose is different and already has a proper sessions mount —
    do not edit the repo copy without confirming with the user.
+   NOTE: the new Dockerfile creates /app and /sessions and runs as the `app`
+   user, so the production compose must mount both paths with matching
+   ownership (or the container will fail to read config/token files).
 2. SolarEdge-only live test PASSED 2026-11-06 (pv=2633W load=8644W grid=6011W).
    Full live suite (HA + SolarEdge) still pending:
        cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
@@ -120,14 +130,35 @@ positive = import, negative = export.
 5. is_night_time bug fixed in 05e7d65: same-day windows (start <= end) were
    previously treated as wrapping windows, causing hour=0 to be flagged as
    night for a 01:00–05:00 window.
+6. SECURITY: se.sh (OAuth bootstrap curl with client_secret + authorization
+   code) was added to .gitignore in 79afadf. The file was never committed
+   (git log --all -- se.sh is empty), so no history rewrite is needed.
+   The client_secret and authorization code in that file should still be
+   treated as compromised — rotate the SolarEdge client secret in the admin
+   console and re-run the OAuth bootstrap.
+7. Git push to origin failed with "Password authentication is not supported
+   for Git operations." Use a PAT (HTTPS) or SSH key, or `gh auth login`.
+   See PR body in pr-body.md.
 
 ## Next session
 
-1. Run the full live suite (HA + SolarEdge):
+1. Commit the Dockerfile rewrite (currently uncommitted on solaredge-v2):
+       git add Dockerfile
+       git commit -m "build: rewrite Dockerfile for slim-bookworm, non-root user, and /sessions mount"
+2. Push solaredge-v2 and open the PR (see pr-body.md):
+       git push -u origin solaredge-v2
+       gh pr create --base main --head solaredge-v2 \
+         --title "Migrate to SolarEdge v2 OAuth + Emporia load via Home Assistant" \
+         --body-file pr-body.md
+   (If push fails with "Password authentication is not supported", configure
+   a PAT or SSH key first — see Known gaps #7.)
+3. Rotate the SolarEdge client secret (see Known gaps #6) and re-run the
+   OAuth bootstrap to regenerate /sessions/solaredge-token.json.
+4. Run the full live suite (HA + SolarEdge):
        cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
-2. Confirm the Tesla unit tests actually run in an environment where
+5. Confirm the Tesla unit tests actually run in an environment where
    tesla-fleet-api / cryptography are installed (currently skipped locally).
-3. Consider adding a test for ChargingAutomation.run_charging_automation()
+6. Consider adding a test for ChargingAutomation.run_charging_automation()
    end-to-end with all APIs mocked (currently only pure-logic helpers are
    covered).
 
