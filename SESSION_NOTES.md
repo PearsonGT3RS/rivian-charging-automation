@@ -53,7 +53,9 @@ Assistant so we can compute grid flow (grid = load - pv).
 
 Local (no network):
     cd charging_automation && python -m unittest discover -s tests -v
-Result: 46 tests, OK (3 skipped — live tests gated by HA_LIVE / SOLAREDGE_LIVE).
+Result: 103 tests, OK (1 skipped — Tesla suite skipped when
+tesla-fleet-api / cryptography are not installed; live tests gated by
+HA_LIVE / SOLAREDGE_LIVE).
 
 Live (not yet run — still pending):
     cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
@@ -88,6 +90,11 @@ positive = import, negative = export.
 - 5e1be36 — fix: format SolarEdge v2 power timestamps as ISO-8601 UTC instants
   (v2 /power rejects bare local timestamps with 400 "Failed to convert ...
   to required type [Instant]"; now appends 'Z' to from/to)
+- d05ed4a — test: add unit tests for HubitatAPI, RivianAPI, and TeslaAPI
+  (tests/test_hubitat.py, tests/test_rivian.py, tests/test_tesla.py)
+- a129941 — fix: remove extra mock response in login session test
+  (first init_user_info() short-circuits without a POST when no session
+  file exists, so the side_effect list had one response too many)
 
 ## Known gaps / follow-ups
 
@@ -106,10 +113,10 @@ positive = import, negative = export.
 4. Tests for ChargingAutomation.py added (tests/test_charging_automation.py)
    covering allocate_solar_watts, watts_to_amps, is_night_time,
    get_automation_mode. All passing after d8fdc16 + 05e7d65.
-   Still no tests for HubitatAPI / RivianAPI / TeslaAPI.
-   (2026-11-06 session: HubitatAPI.py, RivianAPI.py, TeslaAPI.py, and all
-   three test files were added to the chat — ready to start writing those
-   tests next session.)
+   Tests for HubitatAPI / RivianAPI / TeslaAPI added in d05ed4a
+   (tests/test_hubitat.py, tests/test_rivian.py, tests/test_tesla.py).
+   Tesla tests are gated by _TESLA_DEPS_AVAILABLE and skip when
+   tesla-fleet-api / cryptography are not installed.
 5. is_night_time bug fixed in 05e7d65: same-day windows (start <= end) were
    previously treated as wrapping windows, causing hour=0 to be flagged as
    night for a 01:00–05:00 window.
@@ -118,9 +125,11 @@ positive = import, negative = export.
 
 1. Run the full live suite (HA + SolarEdge):
        cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
-2. Add unit tests for HubitatAPI / RivianAPI / TeslaAPI (files already in chat).
-   Follow existing conventions: unittest, sys.path insert, mock requests /
-   _run_async, no network.
+2. Confirm the Tesla unit tests actually run in an environment where
+   tesla-fleet-api / cryptography are installed (currently skipped locally).
+3. Consider adding a test for ChargingAutomation.run_charging_automation()
+   end-to-end with all APIs mocked (currently only pure-logic helpers are
+   covered).
 
 ## Conventions
 
