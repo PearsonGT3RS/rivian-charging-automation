@@ -15,12 +15,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import ChargingAutomation as ca  # noqa: E402
 from ChargingAutomation import (  # noqa: E402
     AutomationMode,
+    CycleResult,
     VOLTS,
     RIVIAN_MIN_WATTS,
     TESLA_MIN_WATTS,
     allocate_solar_watts,
     get_automation_mode,
     is_night_time,
+    run_charging_automation,
     watts_to_amps,
 )
 
@@ -187,6 +189,53 @@ class TestAllocateSolarWatts(unittest.TestCase):
     def test_min_watts_constants(self):
         self.assertEqual(RIVIAN_MIN_WATTS, 8 * VOLTS)
         self.assertEqual(TESLA_MIN_WATTS, 5 * VOLTS)
+
+
+class TestCycleResult(unittest.TestCase):
+    """Verify the CycleResult contract used by main.py to pick a sleep interval."""
+
+    def test_enum_members_exist(self):
+        self.assertIn('IDLE', CycleResult.__members__)
+        self.assertIn('NIGHT_ACTIVE', CycleResult.__members__)
+        self.assertIn('DAYTIME_ACTIVE', CycleResult.__members__)
+
+    def test_idle_is_falsy(self):
+        # main.py's else-branch relies on IDLE being the "nothing to do" case.
+        self.assertFalse(CycleResult.IDLE)
+
+    def test_active_members_are_truthy(self):
+        self.assertTrue(CycleResult.NIGHT_ACTIVE)
+        self.assertTrue(CycleResult.DAYTIME_ACTIVE)
+
+
+class TestRunChargingAutomationEarlyExits(unittest.TestCase):
+    """Exercise the early-return paths of run_charging_automation() without network."""
+
+    def test_returns_idle_when_automation_off(self):
+        # get_automation_mode() returns OFF when hubitat reports automation off.
+        # run_charging_automation() hardcodes hubitat=None, so we patch the
+        # module-level helper to simulate OFF mode.
+        with mock.patch.object(ca, 'get_automation_mode',
+                               return_value=AutomationMode.OFF):
+            result = run_charging_automation()
+        self.assertIs(result, CycleResult.IDLE)
+
+    def test_returns_idle_when_no_chargers_plugged_in(self):
+        # Patch out the network-touching constructors so the cycle reaches the
+        # "no chargers plugged in" branch without hitting any APIs.
+        fake_rivian = mock.Mock()
+        fake_rivian.is_charger_connected.return_value = False
+        fake_tesla = mock.Mock()
+        fake_tesla.is_charger_connected.return_value = False
+
+        with mock.patch.object(ca, 'Config'), \
+             mock.patch.object(ca, 'RivianAPI', return_value=fake_rivian), \
+             mock.patch.object(ca, 'TeslaAPI', return_value=fake_tesla), \
+             mock.patch.object(ca, 'SolarEdgeAPI'), \
+             mock.patch.object(ca, 'get_automation_mode',
+                               return_value=AutomationMode.DEFAULT):
+            result = run_charging_automation()
+        self.assertIs(result, CycleResult.IDLE)
 
 
 if __name__ == '__main__':
