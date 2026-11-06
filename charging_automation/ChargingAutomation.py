@@ -194,7 +194,6 @@ def run_charging_automation():
     config = Config('/app/config.json')
     rivian = RivianAPI(config, '/sessions/rivian-session.json')
     tesla = TeslaAPI('/app/config.json', '/sessions/tesla-session.json')
-    solaredge = SolarEdgeAPI('/app/config.json')
 
     # Build a load provider from Home Assistant / Emporia Vue sensors.
     # If HA is not configured, load_provider stays None and SolarEdgeAPI
@@ -301,6 +300,10 @@ def run_charging_automation():
     # --- END NIGHT TIME HANDLING ---
 
     # Daytime Solar Logic continues here...
+    # Construct the SolarEdge client only in the daytime branch so we don't
+    # trigger an overnight token refresh while night management is active.
+    solaredge = SolarEdgeAPI('/app/config.json')
+
     # 1. Check Power Flow before polling vehicle sensors
     try:
         power_flow = solaredge.get_current_power_flow(load_provider=load_provider)
