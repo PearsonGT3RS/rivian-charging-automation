@@ -24,6 +24,13 @@ class AutomationMode(Enum):
     SOLAR_ONLY = 2   # solar only, no night charging
 
 
+class CycleResult(Enum):
+    """Outcome of a single automation cycle, used by main.py to pick a sleep interval."""
+    IDLE = 0                # nothing to do; sleep the long idle interval
+    NIGHT_ACTIVE = 1        # actively charging at night; poll frequently
+    DAYTIME_ACTIVE = 2      # daytime solar cycle; poll at the daytime interval
+
+
 def is_night_time(config):
     current_hour = datetime.now().hour
     start = config.night_time_start
@@ -130,7 +137,7 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
     return rivian_w, tesla_w
 
 
-def apply_charging(vehicle, target_watts, increment, vehicle_name):
+def apply_charging(vehicle, target_watts, increment, vehicle_name, current_schedules=None):
     """Set charging amps and handle Start/Stop via Signed Commands."""
     now = time.time()
     target_amps = watts_to_amps(target_watts, increment)
@@ -163,13 +170,13 @@ def apply_charging(vehicle, target_watts, increment, vehicle_name):
             vehicle.charge_start() # New Tesla Signed Command
             vehicle.set_charging_amps(target_amps) # Signed Amps
         else:
-            vehicle.set_schedule_amps(target_amps) # Rivian Schedule Amps (no wake-up needed)
+            vehicle.set_schedule_amps(target_amps, current_schedules=current_schedules) # Rivian Schedule Amps (no wake-up needed)
     else:
         # Already charging, just update the amperage (no hysteresis needed for amp changes)
         if vehicle_name == "Tesla":
             vehicle.set_charging_amps(target_amps) # Signed Amps
         else:
-            vehicle.set_schedule_amps(target_amps) # Rivian Schedule Amps (no wake-up needed)
+            vehicle.set_schedule_amps(target_amps, current_schedules=current_schedules) # Rivian Schedule Amps (no wake-up needed)
 
 
 def run_charging_automation():
@@ -182,7 +189,7 @@ def run_charging_automation():
     logger.info('Automation mode: %s', mode)
     if mode == AutomationMode.OFF:
         logger.info('Automation is OFF')
-        return
+        return CycleResult.IDLE
     
     config = Config('/app/config.json')
     rivian = RivianAPI(config, '/sessions/rivian-session.json')
@@ -208,7 +215,7 @@ def run_charging_automation():
         logger.info('No chargers plugged in')
         if hubitat:
             hubitat.set_info_message('Charging: not plugged in', 0, 0)
-        return
+        return CycleResult.IDLE
 
 
     # --- NIGHT TIME HANDLING ---
@@ -217,7 +224,7 @@ def run_charging_automation():
         # --- NEW: Early exit if night management is disabled ---
         if not getattr(config, 'enable_night_management', True):
             logger.info('Night management is disabled. Ignoring vehicles until morning.')
-            return False # Tells main.py to sleep for 30 minutes
+            return CycleResult.IDLE
         
         if mode == AutomationMode.SOLAR_ONLY:
             logger.info('Solar-only mode: ensuring charging is stopped for the night')
@@ -287,9 +294,9 @@ def run_charging_automation():
         try:
             actively_charging = (rivian_connected and rivian.is_charging()) or \
                                 (tesla_connected and tesla.is_charging())
-            return actively_charging
+            return CycleResult.NIGHT_ACTIVE if actively_charging else CycleResult.IDLE
         except Exception:
-            return True # Failsafe: stay on 5-min loops if API fails
+            return CycleResult.NIGHT_ACTIVE  # Failsafe: stay on the short interval if API fails
             
     # --- END NIGHT TIME HANDLING ---
 
@@ -299,10 +306,10 @@ def run_charging_automation():
         power_flow = solaredge.get_current_power_flow(load_provider=load_provider)
     except LoadUnavailableError:
         logger.error('Emporia load unavailable; aborting cycle for safety')
-        return
+        return CycleResult.IDLE
     if power_flow is None:
         logger.error('Failed to get power flow data')
-        return
+        return CycleResult.IDLE
 
     # available_power: positive = surplus, negative = grid draw
     available_power = -power_flow.grid
@@ -369,9 +376,20 @@ def run_charging_automation():
     logger.info('Rivian SOC: %d%%  Tesla SOC: %d%%', rivian_soc, tesla_soc)
 
     # 4. Calculate real-time consumption
+    # Fetch Rivian schedules once and reuse for both the current-power calc
+    # and the subsequent apply_charging() call to avoid a redundant API round-trip.
+    rivian_schedules = None
+    if rivian_connected:
+        try:
+            rivian_schedules = rivian.get_current_schedules()
+        except Exception as e:
+            logger.warning('Failed to fetch Rivian schedules: %s', e)
+            rivian_schedules = None
+
     current_power = 0.0
     if rivian_connected and rivian.is_charging():
-        current_power += rivian.get_current_schedule_amp() * VOLTS
+        if rivian_schedules:
+            current_power += rivian_schedules[0].get('amperage', 0) * VOLTS
     if tesla_connected and tesla.is_charging():
         current_power += tesla.get_current_schedule_amp() * VOLTS
 
@@ -389,7 +407,7 @@ def run_charging_automation():
     # (available_power is the current grid export/import)
     if not must_stop and abs(available_power) < CHANGE_THRESHOLD_WATTS:
         logger.info('Power change %.0fW below threshold, skipping update', available_power)
-        return
+        return CycleResult.DAYTIME_ACTIVE
 
     # --- END INTEGRATED LOGIC PIECE ---
 
@@ -400,13 +418,12 @@ def run_charging_automation():
     )
 
     if rivian_connected:
-        apply_charging(rivian, rivian_w, 2, 'Rivian')
+        apply_charging(rivian, rivian_w, 2, 'Rivian', current_schedules=rivian_schedules)
     if tesla_connected:
         apply_charging(tesla, tesla_w, 1, 'Tesla')
 
     logger.info('Automation cycle complete')
-    
-    # --- NEW FIX: Always monitor solar ---
-    # Because this code block is only reached during the day, we must ALWAYS 
-    # return True so main.py checks solar production every 5 minutes.
-    return True
+
+    # Daytime cycles always return DAYTIME_ACTIVE so main.py polls solar
+    # production at the daytime interval.
+    return CycleResult.DAYTIME_ACTIVE
