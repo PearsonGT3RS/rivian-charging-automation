@@ -227,5 +227,49 @@ class TestTeslaUnit(unittest.TestCase):
         self.assertFalse(self.api._cache_populated)
 
 
+@unittest.skipUnless(os.environ.get('TESLA_LIVE') == '1',
+                     'Set TESLA_LIVE=1 to run live Tesla connectivity test')
+@unittest.skipUnless(tesla_module._TESLA_DEPS_AVAILABLE,
+                     'tesla-fleet-api / cryptography not installed')
+class TestTeslaLive(unittest.TestCase):
+    """
+    Read-only live Tesla test. Requires /app/config.json + /sessions/tesla-session.json.
+
+    Does NOT wake the car, start/stop charging, or change amps. If the car is
+    asleep, get_vehicle_data() returns None and the test reports cached values.
+    """
+
+    def setUp(self):
+        self.api = TeslaAPI('/app/config.json', '/sessions/tesla-session.json')
+
+    def test_live_vehicle_data(self):
+        data = self.api.get_vehicle_data()
+        if data is None:
+            # Asleep or offline — verify the cache fallbacks still work.
+            print('\n[LIVE] Tesla asleep/offline; using cached values')
+            print(f'[LIVE] cached SOC   = {self.api.get_cached_battery_level()}%')
+            print(f'[LIVE] cached limit = {self.api.get_cached_vehicle_limit()}%')
+            self.assertGreaterEqual(self.api.get_cached_battery_level(), 0)
+            self.assertGreaterEqual(self.api.get_cached_vehicle_limit(), 0)
+            return
+
+        charge_state = data.get('response', {}).get('charge_state', {})
+        soc = charge_state.get('battery_level')
+        limit = charge_state.get('charge_limit_soc')
+        state = charge_state.get('charging_state')
+        amps = charge_state.get('charge_amps')
+
+        self.assertIsNotNone(soc, 'Tesla returned no battery_level')
+        self.assertIsNotNone(limit, 'Tesla returned no charge_limit_soc')
+        self.assertGreaterEqual(soc, 0)
+        self.assertLessEqual(soc, 100)
+        self.assertGreaterEqual(limit, 0)
+        self.assertLessEqual(limit, 100)
+
+        print(f'\n[LIVE] Tesla SOC={soc}% limit={limit}% state={state} amps={amps}')
+        print(f'[LIVE] charger_connected={self.api.is_charger_connected()} '
+              f'is_charging={self.api.is_charging()}')
+
+
 if __name__ == '__main__':
     unittest.main()

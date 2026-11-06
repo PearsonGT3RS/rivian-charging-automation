@@ -232,5 +232,46 @@ class TestRivianUnit(unittest.TestCase):
         self.api.set_charging_schedule({'amperage': 16, 'enabled': True})
 
 
+@unittest.skipUnless(os.environ.get('RIVIAN_LIVE') == '1',
+                     'Set RIVIAN_LIVE=1 to run live Rivian connectivity test')
+class TestRivianLive(unittest.TestCase):
+    """
+    Read-only live Rivian test. Requires /app/config.json + /sessions/rivian-session.json.
+
+    Does NOT modify the charging schedule. Only reads vehicle state and the
+    current schedule. If the session is expired, login() will re-authenticate
+    (which is unavoidable for any read) and persist the new session.
+    """
+
+    def setUp(self):
+        self.api = RivianAPI(_FakeConfig(), '/sessions/rivian-session.json')
+
+    def test_live_vehicle_state(self):
+        self.assertIsNotNone(self.api.vehicle_id, 'Rivian returned no vehicle_id')
+        soc = self.api.get_battery_level()
+        self.assertIsNotNone(soc, 'Rivian returned no battery_level')
+        self.assertGreaterEqual(soc, 0)
+        self.assertLessEqual(soc, 100)
+
+        print(f'\n[LIVE] Rivian vehicle_id={self.api.vehicle_id}')
+        print(f'[LIVE] SOC={soc}% status={self.api.charging_status}')
+        print(f'[LIVE] charger_connected={self.api.is_charger_connected()} '
+              f'is_charging={self.api.is_charging()}')
+
+    def test_live_current_schedule(self):
+        schedules = self.api.get_current_schedules()
+        self.assertIsNotNone(schedules, 'Rivian returned no schedules payload')
+        if not schedules:
+            print('\n[LIVE] Rivian has no charging schedules configured')
+            return
+        first = schedules[0]
+        print(f'\n[LIVE] Rivian schedule: enabled={first.get("enabled")} '
+              f'amperage={first.get("amperage")} '
+              f'startTime={first.get("startTime")} '
+              f'duration={first.get("duration")}')
+        self.assertIn('amperage', first)
+        self.assertIn('enabled', first)
+
+
 if __name__ == '__main__':
     unittest.main()
