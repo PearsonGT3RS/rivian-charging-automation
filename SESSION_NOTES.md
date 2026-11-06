@@ -1,6 +1,6 @@
 # Charging Automation — Session Notes
 
-Last updated: 2026-11-06
+Last updated: 2026-11-06 (session 2)
 Repo: charging_automation (SolarEdge v2 migration)
 Branch: solaredge-v2 (PR pending to main/master)
 
@@ -21,6 +21,10 @@ Paste this file's contents into a new chat, then add these files to the chat:
 - charging_automation/tests/test_charging_automation.py
 - charging_automation/tests/test_homeassistant.py
 - charging_automation/tests/test_solaredge.py
+- charging_automation/tests/test_rivian.py
+- charging_automation/tests/test_tesla.py
+- charging_automation/tests/test_hubitat.py
+- charging_automation/tests/__init__.py
 - docker-compose.yml
 
 ## Goal
@@ -43,7 +47,8 @@ Assistant so we can compute grid flow (grid = load - pv).
   catches LoadUnavailableError, uses power_flow.grid.
 - Config.py — exposes solaredge_client_id/secret/site_id/redirect_uri,
   homeassistant_url/token, emporia_load_entities, night_time_start/end.
-- main.py — respects True/False return contract (5-min vs 30-min sleep).
+- main.py — dispatches on CycleResult enum (NIGHT_ACTIVE → 5 min,
+  DAYTIME_ACTIVE → 15 min, IDLE → 30 min).
 - config-example.json — updated to v2 schema (client-id/secret/redirect-uri,
   homeassistant-*, emporia-load-entities, night-time-start/end).
 - requirements.txt — pinned requests==2.31.0, PyJWT>=2.8.0,
@@ -54,14 +59,16 @@ Assistant so we can compute grid flow (grid = load - pv).
 
 Local (no network):
     cd charging_automation && python -m unittest discover -s tests -v
-Result: 103 tests, OK (1 skipped — Tesla suite skipped when
+Result: 108 tests, OK (3 skipped — Tesla suite skipped when
 tesla-fleet-api / cryptography are not installed; live tests gated by
-HA_LIVE / SOLAREDGE_LIVE).
+HA_LIVE / SOLAREDGE_LIVE / TESLA_LIVE / RIVIAN_LIVE).
 
-Live (not yet run — still pending):
-    cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
-Requires /app/config.json with v2 keys and /sessions/solaredge-token.json.
-Bootstrap once if needed:
+Live tests are gated by env vars and are read-only:
+    HA_LIVE=1 SOLAREDGE_LIVE=1 TESLA_LIVE=1 RIVIAN_LIVE=1 \
+      python -m unittest discover -s tests -v
+Requires /app/config.json with v2 keys, /sessions/solaredge-token.json,
+/sessions/tesla-session.json, /sessions/rivian-session.json.
+Bootstrap SolarEdge once if needed:
     cd charging_automation && python SolarEdgeAPI.py bootstrap /app/config.json <authorization_code>
 
 SolarEdge-only live run — PASSED 2026-11-06:
@@ -72,6 +79,18 @@ Observed output:
 Interpretation: grid is positive (importing ~6kW) — expected mid-day with
 EV charging + house load exceeding PV. Sign convention confirmed:
 positive = import, negative = export.
+
+Home Assistant live run — PASSED 2026-11-06:
+    cd charging_automation && HA_LIVE=1 python -m unittest tests.test_homeassistant.TestHomeAssistantLive -v
+Observed output:
+    [LIVE] sensor.right_panel_connection_power_minute_average = 913 W
+    [LIVE] sensor.left_side_connection_power_minute_average = 486 W
+    [LIVE] Emporia total load = 1399 W
+
+Tesla / Rivian live tests — added but not yet run. Both are read-only
+(no wake, no charge start/stop, no amp changes). Run with:
+    TESLA_LIVE=1 python -m unittest tests.test_tesla.TestTeslaLive -v
+    RIVIAN_LIVE=1 python -m unittest tests.test_rivian.TestRivianLive -v
 
 ## Commits this session
 
@@ -103,6 +122,26 @@ positive = import, negative = export.
   and /sessions mount (python:3.12-slim-bookworm, app user, playwright
   chromium, /app + /sessions dirs)
 
+### Session 2 commits (SolarEdge v2 follow-ups)
+
+- 3db84ef — refactor: extract sleep intervals into constants and remove
+  redundant retry call (main.py)
+- b813a95 — refactor: cache Rivian schedules per cycle and add daytime
+  interval constant (RivianAPI.set_schedule_custom accepts optional
+  current_schedules; get_current_schedule_amp guards against None/empty;
+  ChargingAutomation fetches schedules once and reuses)
+- 90fdbaf — feat: return CycleResult enum from automation cycle to select
+  sleep interval (IDLE / NIGHT_ACTIVE / DAYTIME_ACTIVE; main.py dispatches
+  on the enum)
+- ee3819a — test: add CycleResult and early-exit tests for
+  run_charging_automation
+- 26d30fc — test: replace incorrect enum truthiness assertions with
+  distinctness checks (Enum members are always truthy regardless of .value)
+- ba02047 — test: add gated live tests for Tesla and Rivian (read-only;
+  TESLA_LIVE=1 / RIVIAN_LIVE=1)
+- f471080 — fix: handle null values in SolarEdge current power samples
+  (walk backwards to newest non-null sample; return None if all null)
+
 ## Known gaps / follow-ups
 
 1. docker-compose.yml in the repo does NOT mount /sessions or /app/config.json.
@@ -112,8 +151,10 @@ positive = import, negative = export.
    user, so the production compose must mount both paths with matching
    ownership (or the container will fail to read config/token files).
 2. SolarEdge-only live test PASSED 2026-11-06 (pv=2633W load=8644W grid=6011W).
-   Full live suite (HA + SolarEdge) still pending:
-       cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
+   HA-only live test PASSED 2026-11-06 (Emporia total load = 1399W).
+   Tesla / Rivian live tests added but not yet run:
+       TESLA_LIVE=1 python -m unittest tests.test_tesla.TestTeslaLive -v
+       RIVIAN_LIVE=1 python -m unittest tests.test_rivian.TestRivianLive -v
 3. Dead code / minor cleanups — DONE in 7c575b6. Notes:
    - RivianAPI.set_schedule_custom: the dead initial `"amperage": self.AMPS_MAX`
      was already gone in the current file; both branches set it explicitly.
@@ -158,9 +199,14 @@ positive = import, negative = export.
        cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
 5. Confirm the Tesla unit tests actually run in an environment where
    tesla-fleet-api / cryptography are installed (currently skipped locally).
-6. Consider adding a test for ChargingAutomation.run_charging_automation()
-   end-to-end with all APIs mocked (currently only pure-logic helpers are
-   covered).
+6. run_charging_automation() early-exit paths are now covered
+   (TestRunChargingAutomationEarlyExits). A full end-to-end daytime cycle
+   with all APIs mocked is still not covered — consider adding one that
+   exercises the solar allocation + apply_charging path.
+7. SolarEdge get_current_power() now tolerates null samples (f471080). If
+   the inverter is offline for the whole 30-minute window, it returns None
+   and the cycle aborts as IDLE — verify this is the desired behavior
+   during extended outages.
 
 ## Conventions
 
