@@ -106,10 +106,10 @@ class TestRivianUnit(unittest.TestCase):
 
     @mock.patch('RivianAPI.requests.post')
     def test_login_persists_new_session(self, mock_post):
-        # init_user_info fails first (no session), then succeeds after init_session.
+        # No session file -> first init_user_info() short-circuits (no POST).
+        # Then init_session() makes 2 POSTs (CSRF + login), then init_user_info()
+        # makes 1 POST and succeeds.
         mock_post.side_effect = [
-            # init_user_info (no session) -> 200 but no currentUser
-            _Resp(200, {'data': {}}),
             # init_session: CSRF
             _Resp(200, {'data': {'createCsrfToken': {
                 'csrfToken': 'csrf', 'appSessionToken': 'app',
