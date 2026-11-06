@@ -199,14 +199,12 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
        cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
 5. Confirm the Tesla unit tests actually run in an environment where
    tesla-fleet-api / cryptography are installed (currently skipped locally).
-6. run_charging_automation() early-exit paths are now covered
-   (TestRunChargingAutomationEarlyExits). A full end-to-end daytime cycle
-   with all APIs mocked is still not covered — consider adding one that
-   exercises the solar allocation + apply_charging path.
-7. SolarEdge get_current_power() now tolerates null samples (f471080). If
-   the inverter is offline for the whole 30-minute window, it returns None
-   and the cycle aborts as IDLE — verify this is the desired behavior
-   during extended outages.
+6. Run the Tesla and Rivian live tests (read-only) to confirm connectivity:
+       TESLA_LIVE=1 python -m unittest tests.test_tesla.TestTeslaLive -v
+       RIVIAN_LIVE=1 python -m unittest tests.test_rivian.TestRivianLive -v
+7. Consider adding an end-to-end daytime cycle test for
+   run_charging_automation() with all APIs mocked (solar allocation +
+   apply_charging path).
 
 ## Conventions
 
