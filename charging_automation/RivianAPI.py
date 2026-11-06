@@ -210,9 +210,11 @@ class RivianAPI:
 
     def get_current_schedule_amp(self):
         schedules = self.get_current_schedules()
-        return schedules[0]['amperage']
+        if not schedules:
+            return 0
+        return schedules[0].get('amperage', 0)
 
-    def set_schedule_custom(self, amps=AMPS_MAX):
+    def set_schedule_custom(self, amps=AMPS_MAX, current_schedules=None):
         new_schedule = {
                 "startTime": 0,
                 "duration": 1440, # 24-hour window
@@ -229,8 +231,9 @@ class RivianAPI:
             new_schedule["enabled"] = True
             new_schedule["amperage"] = int(amps)
 
-        current_schedules = self.get_current_schedules()
-        
+        if current_schedules is None:
+            current_schedules = self.get_current_schedules()
+
         # Safely copy the location from the existing schedule
         if current_schedules and len(current_schedules) > 0:
             new_schedule["location"] = current_schedules[0].get("location", {})
@@ -250,8 +253,8 @@ class RivianAPI:
     def set_schedule_off(self):
         self.set_schedule_custom(amps=0)
 
-    def set_schedule_amps(self, amps):
-        self.set_schedule_custom(amps=amps)
+    def set_schedule_amps(self, amps, current_schedules=None):
+        self.set_schedule_custom(amps=amps, current_schedules=current_schedules)
 
     def set_charging_schedule(self, schedule):
         logger.info('Updating charging schedule: {}'.format(schedule))

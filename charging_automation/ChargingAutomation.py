@@ -130,7 +130,7 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
     return rivian_w, tesla_w
 
 
-def apply_charging(vehicle, target_watts, increment, vehicle_name):
+def apply_charging(vehicle, target_watts, increment, vehicle_name, current_schedules=None):
     """Set charging amps and handle Start/Stop via Signed Commands."""
     now = time.time()
     target_amps = watts_to_amps(target_watts, increment)
@@ -163,13 +163,13 @@ def apply_charging(vehicle, target_watts, increment, vehicle_name):
             vehicle.charge_start() # New Tesla Signed Command
             vehicle.set_charging_amps(target_amps) # Signed Amps
         else:
-            vehicle.set_schedule_amps(target_amps) # Rivian Schedule Amps (no wake-up needed)
+            vehicle.set_schedule_amps(target_amps, current_schedules=current_schedules) # Rivian Schedule Amps (no wake-up needed)
     else:
         # Already charging, just update the amperage (no hysteresis needed for amp changes)
         if vehicle_name == "Tesla":
             vehicle.set_charging_amps(target_amps) # Signed Amps
         else:
-            vehicle.set_schedule_amps(target_amps) # Rivian Schedule Amps (no wake-up needed)
+            vehicle.set_schedule_amps(target_amps, current_schedules=current_schedules) # Rivian Schedule Amps (no wake-up needed)
 
 
 def run_charging_automation():
@@ -369,9 +369,20 @@ def run_charging_automation():
     logger.info('Rivian SOC: %d%%  Tesla SOC: %d%%', rivian_soc, tesla_soc)
 
     # 4. Calculate real-time consumption
+    # Fetch Rivian schedules once and reuse for both the current-power calc
+    # and the subsequent apply_charging() call to avoid a redundant API round-trip.
+    rivian_schedules = None
+    if rivian_connected:
+        try:
+            rivian_schedules = rivian.get_current_schedules()
+        except Exception as e:
+            logger.warning('Failed to fetch Rivian schedules: %s', e)
+            rivian_schedules = None
+
     current_power = 0.0
     if rivian_connected and rivian.is_charging():
-        current_power += rivian.get_current_schedule_amp() * VOLTS
+        if rivian_schedules:
+            current_power += rivian_schedules[0].get('amperage', 0) * VOLTS
     if tesla_connected and tesla.is_charging():
         current_power += tesla.get_current_schedule_amp() * VOLTS
 
@@ -400,7 +411,7 @@ def run_charging_automation():
     )
 
     if rivian_connected:
-        apply_charging(rivian, rivian_w, 2, 'Rivian')
+        apply_charging(rivian, rivian_w, 2, 'Rivian', current_schedules=rivian_schedules)
     if tesla_connected:
         apply_charging(tesla, tesla_w, 1, 'Tesla')
 

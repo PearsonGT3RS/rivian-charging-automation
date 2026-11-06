@@ -8,6 +8,7 @@ from ChargingAutomation import run_charging_automation
 logger = logging.getLogger(__name__)
 
 ACTIVE_ITERATION_SECONDS = 5 * 60
+DAYTIME_ACTIVE_ITERATION_SECONDS = 15 * 60
 IDLE_ITERATION_SECONDS = 30 * 60
 
 
@@ -23,8 +24,8 @@ def main():
     setup_logging()
 
     logger.info(
-        'Charging Automation Started: active interval {}s, idle interval {}s'.format(
-            ACTIVE_ITERATION_SECONDS, IDLE_ITERATION_SECONDS
+        'Charging Automation Started: active interval {}s, daytime active interval {}s, idle interval {}s'.format(
+            ACTIVE_ITERATION_SECONDS, DAYTIME_ACTIVE_ITERATION_SECONDS, IDLE_ITERATION_SECONDS
         )
     )
 
