@@ -1,6 +1,6 @@
 # Charging Automation — Session Notes
 
-Last updated: 2026-11-05
+Last updated: 2026-11-06
 Repo: charging_automation (SolarEdge v2 migration)
 
 ## How to resume
@@ -55,7 +55,7 @@ Local (no network):
     cd charging_automation && python -m unittest discover -s tests -v
 Result: 46 tests, OK (3 skipped — live tests gated by HA_LIVE / SOLAREDGE_LIVE).
 
-Live (not yet run this session):
+Live (not yet run — still pending):
     cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
 Requires /app/config.json with v2 keys and /sessions/solaredge-token.json.
 Bootstrap once if needed:
@@ -63,6 +63,10 @@ Bootstrap once if needed:
 
 SolarEdge-only live run (next step):
     cd charging_automation && SOLAREDGE_LIVE=1 python -m unittest tests.test_solaredge.TestSolarEdgeLive -v
+Expected output:
+    [LIVE] SolarEdge current PV power: <N> W
+    [LIVE] pv=<N>W load=<N>W grid=<N>W
+Interpret pv/load/grid after the run (grid sign: positive = import, negative = export).
 
 ## Commits this session
 
@@ -85,8 +89,10 @@ SolarEdge-only live run (next step):
 1. docker-compose.yml in the repo does NOT mount /sessions or /app/config.json.
    Production compose is different and already has a proper sessions mount —
    do not edit the repo copy without confirming with the user.
-2. Live tests against Emporia + SolarEdge have not been run yet this session.
+2. Live tests against Emporia + SolarEdge have not been run yet.
    Next step: run the SolarEdge-only live test and interpret pv/load/grid.
+   (2026-11-06 session: command + prerequisites were provided to the user;
+   the run itself was not executed in-session.)
 3. Dead code / minor cleanups — DONE in 7c575b6. Notes:
    - RivianAPI.set_schedule_custom: the dead initial `"amperage": self.AMPS_MAX`
      was already gone in the current file; both branches set it explicitly.
@@ -97,9 +103,22 @@ SolarEdge-only live run (next step):
    covering allocate_solar_watts, watts_to_amps, is_night_time,
    get_automation_mode. All passing after d8fdc16 + 05e7d65.
    Still no tests for HubitatAPI / RivianAPI / TeslaAPI.
+   (2026-11-06 session: HubitatAPI.py, RivianAPI.py, TeslaAPI.py, and all
+   three test files were added to the chat — ready to start writing those
+   tests next session.)
 5. is_night_time bug fixed in 05e7d65: same-day windows (start <= end) were
    previously treated as wrapping windows, causing hour=0 to be flagged as
    night for a 01:00–05:00 window.
+
+## Next session
+
+1. Run the SolarEdge-only live test and interpret pv/load/grid:
+       cd charging_automation && SOLAREDGE_LIVE=1 python -m unittest tests.test_solaredge.TestSolarEdgeLive -v
+2. If green, run the full live suite (HA + SolarEdge):
+       cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
+3. Add unit tests for HubitatAPI / RivianAPI / TeslaAPI (files already in chat).
+   Follow existing conventions: unittest, sys.path insert, mock requests /
+   _run_async, no network.
 
 ## Conventions
 
