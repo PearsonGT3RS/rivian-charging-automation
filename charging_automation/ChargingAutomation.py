@@ -220,6 +220,14 @@ def run_charging_automation():
     # --- NIGHT TIME HANDLING ---
     if is_night_time(config):
 
+        # Keep the SolarEdge refresh token alive without polling live data.
+        # v2 invalidates refresh tokens after 14 days of non-use; this fires
+        # at most once per KEEPALIVE_INTERVAL_SECONDS (7 days).
+        try:
+            SolarEdgeAPI('/app/config.json')._maybe_keepalive_refresh()
+        except Exception as e:
+            logger.warning('SolarEdge keepalive check failed: %s', e)
+
         # --- NEW: Early exit if night management is disabled ---
         if not getattr(config, 'enable_night_management', True):
             logger.info('Night management is disabled. Ignoring vehicles until morning.')
