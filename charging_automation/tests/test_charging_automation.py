@@ -199,13 +199,11 @@ class TestCycleResult(unittest.TestCase):
         self.assertIn('NIGHT_ACTIVE', CycleResult.__members__)
         self.assertIn('DAYTIME_ACTIVE', CycleResult.__members__)
 
-    def test_idle_is_falsy(self):
-        # main.py's else-branch relies on IDLE being the "nothing to do" case.
-        self.assertFalse(CycleResult.IDLE)
-
-    def test_active_members_are_truthy(self):
-        self.assertTrue(CycleResult.NIGHT_ACTIVE)
-        self.assertTrue(CycleResult.DAYTIME_ACTIVE)
+    def test_members_are_distinct(self):
+        # main.py dispatches on equality, so the members must be distinct.
+        self.assertNotEqual(CycleResult.IDLE, CycleResult.NIGHT_ACTIVE)
+        self.assertNotEqual(CycleResult.IDLE, CycleResult.DAYTIME_ACTIVE)
+        self.assertNotEqual(CycleResult.NIGHT_ACTIVE, CycleResult.DAYTIME_ACTIVE)
 
 
 class TestRunChargingAutomationEarlyExits(unittest.TestCase):
