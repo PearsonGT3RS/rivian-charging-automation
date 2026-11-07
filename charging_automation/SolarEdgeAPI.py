@@ -212,7 +212,9 @@ class SolarEdgeAPI:
         """Get current PV production in watts (latest 15-min sample)."""
         now = datetime.now(timezone.utc)
         # v2 requires ISO-8601 Instants (with Z / offset), not bare local times.
-        frm = (now - timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        # Look back 60 minutes so a single delayed/null bucket doesn't force us
+        # to fall back to a stale or zero sample.
+        frm = (now - timedelta(minutes=60)).strftime('%Y-%m-%dT%H:%M:%SZ')
         to = now.strftime('%Y-%m-%dT%H:%M:%SZ')
         try:
             data = self._get(f'/sites/{self.site_id}/power', params={

@@ -329,6 +329,18 @@ def run_charging_automation():
         available_power, power_flow.pv, power_flow.load, power_flow.grid,
     )
 
+    # Guard against transient SolarEdge reporting gaps: if PV reads 0 during
+    # daylight hours, treat it as a bad sample and skip the cycle rather than
+    # acting on it (which would stop charging and waste solar).
+    current_hour = datetime.now().hour
+    if power_flow.pv <= 0 and 8 <= current_hour < 17:
+        logger.warning(
+            'PV reported %.0fW during daylight hours; skipping cycle to avoid '
+            'acting on a transient SolarEdge reporting gap.',
+            power_flow.pv,
+        )
+        return CycleResult.DAYTIME_ACTIVE
+
     # Tesla SOC (Integrating Sleep-Aware + Disconnected = 100% logic)
     tesla_soc = 100 # Default to "Full" to prevent accidental draw
     if tesla_connected:
