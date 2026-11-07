@@ -260,8 +260,9 @@ class SolarEdgeAPI:
             load = pv
 
         grid = load - pv
-        logger.debug(
-            'SolarEdge v2: pv=%.0fW load=%.0fW grid=%.0fW', pv, load, grid,
+        logger.info(
+            'Power flow: pv=%.0fW load=%.0fW grid=%.0fW (positive grid = import)',
+            pv, load, grid,
         )
         return PowerFlow(pv=pv, grid=grid, load=load)
 

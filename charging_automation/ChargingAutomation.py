@@ -324,7 +324,10 @@ def run_charging_automation():
 
     # available_power: positive = surplus, negative = grid draw
     available_power = -power_flow.grid
-    logger.info('Surplus available: %.0fW', available_power)
+    logger.info(
+        'Surplus available: %.0fW (pv=%.0fW load=%.0fW grid=%.0fW)',
+        available_power, power_flow.pv, power_flow.load, power_flow.grid,
+    )
 
     # Tesla SOC (Integrating Sleep-Aware + Disconnected = 100% logic)
     tesla_soc = 100 # Default to "Full" to prevent accidental draw
