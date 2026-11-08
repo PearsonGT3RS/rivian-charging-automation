@@ -125,7 +125,21 @@ class SolarEdgeAPI:
             'client_id': self.client_id,
             'client_secret': self.client_secret,
         }, timeout=30)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # SolarEdge returns HTTP 500 (not 400) when the refresh token is
+            # expired or revoked. Surface the body so the cause is obvious.
+            body = resp.text
+            logger.error(
+                'SolarEdge token refresh failed: HTTP %d - %s',
+                resp.status_code, body,
+            )
+            if 'invalid_grant' in body or resp.status_code == 500:
+                logger.error(
+                    'The SolarEdge refresh token is expired or revoked. '
+                    'Re-run the OAuth bootstrap: '
+                    'python SolarEdgeAPI.py bootstrap <credentials.json> <authorization_code>'
+                )
+            resp.raise_for_status()
         self._store_token_response(resp.json())
 
     def _ensure_token(self):
@@ -234,6 +248,18 @@ class SolarEdgeAPI:
                 value = sample.get('value')
                 if value is not None:
                     return float(value)
+            return None
+        except requests.exceptions.HTTPError as e:
+            # Distinguish auth failures (token refresh failed) from transient
+            # data errors so the operator knows whether to re-bootstrap.
+            if e.response is not None and e.response.status_code in (401, 403):
+                logger.error(
+                    'SolarEdge auth failed (%d). The refresh token is likely '
+                    'expired; re-run the OAuth bootstrap.',
+                    e.response.status_code,
+                )
+            else:
+                logger.error('Error getting current power: %s', e)
             return None
         except requests.exceptions.RequestException as e:
             logger.error('Error getting current power: %s', e)
