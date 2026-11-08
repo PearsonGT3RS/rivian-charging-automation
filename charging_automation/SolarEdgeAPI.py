@@ -117,7 +117,9 @@ class SolarEdgeAPI:
                 'No SolarEdge refresh token available. Re-run the OAuth bootstrap.'
             )
         logger.info('Refreshing SolarEdge access token...')
-        resp = requests.post(self.TOKEN_URL, json={
+        # SolarEdge v2 OAuth token endpoint expects application/x-www-form-urlencoded
+        # per RFC 6749. Sending JSON causes the server to return HTTP 500.
+        resp = requests.post(self.TOKEN_URL, data={
             'grant_type': 'refresh_token',
             'refresh_token': self._refresh_token,
             'client_id': self.client_id,
@@ -168,7 +170,9 @@ class SolarEdgeAPI:
         with open(credentials_file) as f:
             credentials = json.load(f)
 
-        resp = requests.post(cls.TOKEN_URL, json={
+        # SolarEdge v2 OAuth token endpoint expects application/x-www-form-urlencoded
+        # per RFC 6749. Sending JSON causes the server to return HTTP 500.
+        resp = requests.post(cls.TOKEN_URL, data={
             'grant_type': 'authorization_code',
             'code': code,
             'client_id': credentials['solaredge-client-id'],
