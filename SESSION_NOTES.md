@@ -1,6 +1,6 @@
 # Charging Automation — Session Notes
 
-Last updated: 2026-11-09 (session 3)
+Last updated: 2026-11-09 (session 3, continued)
 Repo: charging_automation (SolarEdge v2 migration)
 Branch: solaredge-v2 (PR pending to main/master)
 
@@ -150,6 +150,14 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
   allocation (refinement: use commanded amps as the *value*, but only when
   is_charging() is True — avoids both under-counting during a wake/ramp and
   over-counting from stale commanded amps after a session ends)
+- 602c46d — docs: update session notes with solar allocation logic and
+  session 3 commits
+- 4b480b4 — fix: estimate EV draw from recent commanded amps to handle
+  wake/ramp window (adds module-level `_last_commanded` cache with a
+  20-minute TTL; `apply_charging()` records the commanded amps, and the
+  draw calculation trusts that cache when `is_charging()` is False but a
+  recent command exists. Falls back to `live_amps * VOLTS` only when
+  `is_charging()` is True and no recent command is cached.)
 
 ## Solar allocation logic (as of session 3)
 
@@ -159,15 +167,27 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
 
 where:
 - `available_power = -power_flow.grid` (positive = surplus / export).
-- `current_power` = sum of each connected vehicle's *commanded* amps × 240V,
-  but ONLY when that vehicle reports `is_charging() == True`. This is
-  important because Emporia's `load` already includes whatever the EV is
-  drawing, so we must add that draw back to the surplus to get the total
-  budget. Gating on `is_charging()` avoids two failure modes:
-    1. Under-counting during a wake/ramp (is_charging() transiently False)
-       would allocate only the *new* surplus instead of (existing + new).
-    2. Over-counting from stale commanded amps after a session ends would
-       allocate phantom watts and import from the grid.
+- `current_power` = sum of each connected vehicle's estimated draw, where
+  the estimate is:
+    - `live_amps * VOLTS` when `is_charging() == True` (authoritative), OR
+    - `_last_commanded[name].amps * VOLTS` when `is_charging() == False`
+      but a command was issued within `COMMANDED_AMPS_TTL_SECONDS`
+      (20 minutes), OR
+    - `live_amps * VOLTS` as a last-resort fallback (only reached when
+      `is_charging()` is False and no recent command is cached — in
+      practice this yields 0 because `live_amps` is 0 when the car is
+      asleep/stopped).
+
+  This is important because Emporia's `load` already includes whatever the
+  EV is drawing, so we must add that draw back to the surplus to get the
+  total budget. The `_last_commanded` cache (populated by `apply_charging()`)
+  handles the wake/ramp window where `is_charging()` transiently reports
+  False even though the car is drawing power. The 20-minute TTL bounds the
+  window where a stale command could over-count; since daytime cycles run
+  every 15 minutes, a stale command is corrected within one cycle.
+  `apply_charging()` clears the cache entry when it commands a stop
+  (`target_amps < AMPS_MIN`), so a finished session does not leave phantom
+  watts behind.
 
 `allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected,
 tesla_connected)` then splits the budget:
@@ -186,9 +206,26 @@ tesla_connected)` then splits the budget:
   (capped at that vehicle's AMPS_MAX × 240V). If both shares are below
   minimum → (0, 0).
 
-The commanded-amps change (363e447) only affects the *input* to the split
-(`solar_for_ev`); the split ratios and minimum-watt reassignment are
-unchanged and remain correct.
+The commanded-amps changes (363e447, 4b480b4) only affect the *input* to
+the split (`solar_for_ev`); the split ratios and minimum-watt reassignment
+are unchanged and remain correct.
+
+### Why 363e447 alone was insufficient
+
+The 363e447 gate (`is_charging()` only) fixed the phantom-watt case but
+reintroduced the original under-count during the wake/ramp window. Observed
+in production on 2026-11-09:
+
+    Power flow: pv=6331W load=5767W grid=-564W
+    Surplus available: 564W
+    Current EV Draw: 0W | Total Solar for EVs: 564W
+    Tesla: target 564W → 2A (Currently Charging: False)
+
+The Tesla was drawing power (load=5767W includes it) but reported
+`charging_state != 'Charging'`, so `current_power` was 0 and we allocated
+only the new 564W surplus instead of (existing draw + 564W). 4b480b4 fixes
+this by trusting the last commanded amps for up to 20 minutes after the
+command, regardless of `is_charging()`.
 
 ## Known gaps / follow-ups
 
@@ -253,12 +290,20 @@ unchanged and remain correct.
 7. Consider adding an end-to-end daytime cycle test for
    run_charging_automation() with all APIs mocked (solar allocation +
    apply_charging path).
-8. Residual edge case in the EV-draw calculation: if the Tesla is mid-wake
-   (is_charging() returns False for ~30s while the car boots), current_power
-   will be 0 for that cycle and solar_for_ev will only reflect the new
-   surplus. The next cycle (15 min later) corrects it. If this proves
-   disruptive, track "we just commanded a charge start" in a local variable
-   and treat it as charging for the next cycle.
+8. EV-draw wake/ramp edge case — ADDRESSED in 4b480b4 via the
+   `_last_commanded` cache (20-minute TTL). Remaining caveats:
+   - `_last_commanded` is module-level state and resets on process restart.
+     The first cycle after a restart falls back to `is_charging()`; if that
+     cycle lands in the wake/ramp window, we under-count once and
+     self-correct on the next cycle.
+   - If a vehicle is commanded to charge but the user unplugs it before the
+     next cycle, the cache will over-count for up to 20 minutes. The
+     `is_charger_connected()` check at the top of the cycle mitigates this
+     (the vehicle is dropped from `current_power` entirely when
+     disconnected), but a mid-cycle unplug is not detected until the next
+     poll.
+   - Consider persisting `_last_commanded` to disk (e.g. alongside the
+     session files) if restart-induced under-counts prove disruptive.
 
 ## Conventions
 
