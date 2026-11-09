@@ -412,18 +412,30 @@ def run_charging_automation():
             logger.warning('Failed to fetch Rivian schedules: %s', e)
             rivian_schedules = None
 
-    # Current EV draw: use the *commanded* amps (schedule / charge_amps) rather
-    # than is_charging(). Emporia's load already includes whatever the EV is
+    # Current EV draw: Emporia's load already includes whatever the EV is
     # drawing, so we must add that draw back to the surplus to get the total
-    # solar budget for the EVs. is_charging() can transiently report False
-    # (e.g. right after a wake, or while the car is ramping), which would
-    # under-count the EV draw and cause us to allocate only the *new* surplus
-    # instead of (existing draw + new surplus).
+    # solar budget for the EVs. We use the *commanded* amps (schedule /
+    # charge_amps) as the value, but only when the vehicle reports it is
+    # actually charging. This avoids two failure modes:
+    #   1. is_charging() transiently False (right after a wake, or while the
+    #      car is ramping) would under-count the draw and cause us to allocate
+    #      only the *new* surplus instead of (existing draw + new surplus).
+    #   2. A stale commanded amp (e.g. the car just finished a session but the
+    #      last-set amps persist) would over-count the draw and cause us to
+    #      allocate phantom watts, importing from the grid.
     current_power = 0.0
     if rivian_connected and rivian_schedules:
-        current_power += rivian_schedules[0].get('amperage', 0) * VOLTS
+        try:
+            if rivian.is_charging():
+                current_power += rivian_schedules[0].get('amperage', 0) * VOLTS
+        except Exception:
+            pass
     if tesla_connected:
-        current_power += tesla.get_current_schedule_amp() * VOLTS
+        try:
+            if tesla.is_charging():
+                current_power += tesla.get_current_schedule_amp() * VOLTS
+        except Exception:
+            pass
 
 
     solar_for_ev = current_power + available_power
