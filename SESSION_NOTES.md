@@ -1,6 +1,6 @@
 # Charging Automation — Session Notes
 
-Last updated: 2026-11-06 (session 2)
+Last updated: 2026-11-09 (session 3)
 Repo: charging_automation (SolarEdge v2 migration)
 Branch: solaredge-v2 (PR pending to main/master)
 
@@ -142,6 +142,54 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
 - f471080 — fix: handle null values in SolarEdge current power samples
   (walk backwards to newest non-null sample; return None if all null)
 
+### Session 3 commits (EV draw / solar allocation fix)
+
+- f9eebbf — fix: use commanded amps for EV draw in solar allocation
+  (initial attempt: replaced is_charging() gate with commanded amps only)
+- 363e447 — fix: gate EV current draw on is_charging to avoid phantom watt
+  allocation (refinement: use commanded amps as the *value*, but only when
+  is_charging() is True — avoids both under-counting during a wake/ramp and
+  over-counting from stale commanded amps after a session ends)
+
+## Solar allocation logic (as of session 3)
+
+`run_charging_automation()` computes the total solar budget for the EVs as:
+
+    solar_for_ev = current_power + available_power
+
+where:
+- `available_power = -power_flow.grid` (positive = surplus / export).
+- `current_power` = sum of each connected vehicle's *commanded* amps × 240V,
+  but ONLY when that vehicle reports `is_charging() == True`. This is
+  important because Emporia's `load` already includes whatever the EV is
+  drawing, so we must add that draw back to the surplus to get the total
+  budget. Gating on `is_charging()` avoids two failure modes:
+    1. Under-counting during a wake/ramp (is_charging() transiently False)
+       would allocate only the *new* surplus instead of (existing + new).
+    2. Over-counting from stale commanded amps after a session ends would
+       allocate phantom watts and import from the grid.
+
+`allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected,
+tesla_connected)` then splits the budget:
+- No vehicles connected → (0, 0).
+- Single vehicle connected → gets everything, unless SOC ≥ 100 (→ 0,0) or
+  SOC > 50 with solar_for_ev ≤ 0 (→ 0,0).
+- Both connected, both SOC > 50, no surplus → (0, 0) (Rule 4).
+- Both connected, total == 0 → (0, 0).
+- Split ratio by SOC:
+    - Both ≥ 100 → (0, 0).
+    - One ≥ 100 → other gets 100%.
+    - Both ≤ 50 → 50/50.
+    - Otherwise → lower-SOC vehicle gets 75%, higher gets 25%.
+- Minimum-watt reassignment: if a vehicle's share < its hardware minimum
+  (Rivian 1920W, Tesla 1200W), its share is reassigned to the other vehicle
+  (capped at that vehicle's AMPS_MAX × 240V). If both shares are below
+  minimum → (0, 0).
+
+The commanded-amps change (363e447) only affects the *input* to the split
+(`solar_for_ev`); the split ratios and minimum-watt reassignment are
+unchanged and remain correct.
+
 ## Known gaps / follow-ups
 
 1. docker-compose.yml in the repo does NOT mount /sessions or /app/config.json.
@@ -205,6 +253,12 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
 7. Consider adding an end-to-end daytime cycle test for
    run_charging_automation() with all APIs mocked (solar allocation +
    apply_charging path).
+8. Residual edge case in the EV-draw calculation: if the Tesla is mid-wake
+   (is_charging() returns False for ~30s while the car boots), current_power
+   will be 0 for that cycle and solar_for_ev will only reflect the new
+   surplus. The next cycle (15 min later) corrects it. If this proves
+   disruptive, track "we just commanded a charge start" in a local variable
+   and treat it as charging for the next cycle.
 
 ## Conventions
 
