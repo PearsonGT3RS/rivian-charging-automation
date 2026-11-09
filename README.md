@@ -1,4 +1,4 @@
-# Solar Charging Automation for Rivian & Tesla
+# Solar Charging for Tesla, Rivian, with SolarEdge inverters
 
 | WARNING: This script is provided as is, without any guarantees it will work for you. Use at your own risk.
 | :---
