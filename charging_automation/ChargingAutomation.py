@@ -474,6 +474,23 @@ def run_charging_automation():
             pass
 
 
+    # Sanity check: the EV cannot be drawing more than the total measured
+    # load. If the vehicle API reports a commanded draw that exceeds the
+    # Emporia load, the API is stale/wrong (e.g. the car reports
+    # charging_state='Charging' but is paused at its limit, or charge_amps
+    # is left over from a previous session). Trust Emporia and cap.
+    #
+    # This also guarantees solar_for_ev <= pv, since
+    #   solar_for_ev = current_power + (pv - load)
+    # and capping current_power at load gives solar_for_ev <= pv.
+    if current_power > power_flow.load:
+        logger.warning(
+            'EV draw estimate %.0fW exceeds measured load %.0fW; '
+            'capping to load (vehicle API likely stale).',
+            current_power, power_flow.load,
+        )
+        current_power = max(0.0, power_flow.load)
+
     solar_for_ev = current_power + available_power
     logger.info('Current EV Draw: %.0fW | Total Solar for EVs: %.0fW', current_power, solar_for_ev)
 
