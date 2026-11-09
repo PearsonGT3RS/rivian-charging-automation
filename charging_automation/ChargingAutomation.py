@@ -139,10 +139,9 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
 
 def apply_charging(vehicle, target_watts, increment, vehicle_name, current_schedules=None):
     """Set charging amps and handle Start/Stop via Signed Commands."""
-    now = time.time()
     target_amps = watts_to_amps(target_watts, increment)
     target_amps = min(target_amps, vehicle.AMPS_MAX)
-    
+
     # Check current state (is_charging should handle offline gracefully)
     try:
         is_currently_charging = vehicle.is_charging()
@@ -198,12 +197,30 @@ def run_charging_automation():
     # Build a load provider from Home Assistant / Emporia Vue sensors.
     # If HA is not configured, load_provider stays None and SolarEdgeAPI
     # falls back to assuming load == pv (grid == 0).
+    #
+    # We also build per-EV draw providers from dedicated Emporia sensors
+    # (e.g. the Rivian charger circuit and the Tesla's circuit). These give
+    # us ground truth for what each EV is actually drawing, which is far
+    # more reliable than inferring it from the vehicle API (is_charging()
+    # is unreliable during the wake/ramp window, and charge_amps can be
+    # stale after a session ends).
     load_provider = None
-    if config.homeassistant_url and config.homeassistant_token and config.emporia_load_entities:
+    rivian_draw_provider = None
+    tesla_draw_provider = None
+    if config.homeassistant_url and config.homeassistant_token:
         ha = HomeAssistantAPI(config.homeassistant_url, config.homeassistant_token)
 
-        def load_provider():
-            return ha.get_sensor_sum(config.emporia_load_entities)
+        if config.emporia_load_entities:
+            def load_provider():
+                return ha.get_sensor_sum(config.emporia_load_entities)
+
+        if config.emporia_rivian_entity:
+            def rivian_draw_provider():
+                return ha.get_sensor_value(config.emporia_rivian_entity)
+
+        if config.emporia_tesla_entity:
+            def tesla_draw_provider():
+                return ha.get_sensor_value(config.emporia_tesla_entity)
 
     rivian_connected = rivian.is_charger_connected()
     tesla_connected = tesla.is_charger_connected()
@@ -324,7 +341,22 @@ def run_charging_automation():
 
     # available_power: positive = surplus, negative = grid draw
     available_power = -power_flow.grid
-    logger.info('Surplus available: %.0fW', available_power)
+    logger.info(
+        'Surplus available: %.0fW (pv=%.0fW load=%.0fW grid=%.0fW)',
+        available_power, power_flow.pv, power_flow.load, power_flow.grid,
+    )
+
+    # Guard against transient SolarEdge reporting gaps: if PV reads 0 during
+    # daylight hours, treat it as a bad sample and skip the cycle rather than
+    # acting on it (which would stop charging and waste solar).
+    current_hour = datetime.now().hour
+    if power_flow.pv <= 0 and 8 <= current_hour < 17:
+        logger.warning(
+            'PV reported %.0fW during daylight hours; skipping cycle to avoid '
+            'acting on a transient SolarEdge reporting gap.',
+            power_flow.pv,
+        )
+        return CycleResult.DAYTIME_ACTIVE
 
     # Tesla SOC (Integrating Sleep-Aware + Disconnected = 100% logic)
     tesla_soc = 100 # Default to "Full" to prevent accidental draw
@@ -387,8 +419,8 @@ def run_charging_automation():
     logger.info('Rivian SOC: %d%%  Tesla SOC: %d%%', rivian_soc, tesla_soc)
 
     # 4. Calculate real-time consumption
-    # Fetch Rivian schedules once and reuse for both the current-power calc
-    # and the subsequent apply_charging() call to avoid a redundant API round-trip.
+    # Fetch Rivian schedules once and reuse for the subsequent apply_charging()
+    # call to avoid a redundant API round-trip.
     rivian_schedules = None
     if rivian_connected:
         try:
@@ -397,16 +429,46 @@ def run_charging_automation():
             logger.warning('Failed to fetch Rivian schedules: %s', e)
             rivian_schedules = None
 
-    current_power = 0.0
-    if rivian_connected and rivian.is_charging():
-        if rivian_schedules:
-            current_power += rivian_schedules[0].get('amperage', 0) * VOLTS
-    if tesla_connected and tesla.is_charging():
-        current_power += tesla.get_current_schedule_amp() * VOLTS
+    # Current EV draw: Emporia's load already includes whatever the EV is
+    # drawing, so we must add that draw back to the surplus to get the total
+    # solar budget for the EVs.
+    #
+    # We read each EV's draw directly from its dedicated Emporia sensor
+    # (rivian_charger_power_minute_average / external_lighting_power_minute_average).
+    # This is ground truth and avoids the failure modes of inferring draw from
+    # the vehicle API:
+    #   - is_charging() is unreliable during the wake/ramp window (car draws
+    #     power while reporting charging_state != 'Charging').
+    #   - charge_amps can be stale after a session ends (car reports a
+    #     commanded amp but is drawing 0W).
+    #
+    # If a per-EV sensor is not configured or returns None, we fall back to 0
+    # for that vehicle (conservative: we under-count rather than over-count,
+    # so we never command more than the actual surplus).
+    rivian_draw = 0.0
+    tesla_draw = 0.0
+    if rivian_connected and rivian_draw_provider is not None:
+        try:
+            value = rivian_draw_provider()
+            if value is not None:
+                rivian_draw = max(0.0, value)
+        except Exception as e:
+            logger.warning('Failed to read Rivian draw sensor: %s', e)
+    if tesla_connected and tesla_draw_provider is not None:
+        try:
+            value = tesla_draw_provider()
+            if value is not None:
+                tesla_draw = max(0.0, value)
+        except Exception as e:
+            logger.warning('Failed to read Tesla draw sensor: %s', e)
 
-
+    current_power = rivian_draw + tesla_draw
     solar_for_ev = current_power + available_power
-    logger.info('Current EV Draw: %.0fW | Total Solar for EVs: %.0fW', current_power, solar_for_ev)
+    logger.info(
+        'Current EV Draw: %.0fW (Rivian %.0fW + Tesla %.0fW) | '
+        'Total Solar for EVs: %.0fW',
+        current_power, rivian_draw, tesla_draw, solar_for_ev,
+    )
 
     # --- INTEGRATED LOGIC PIECE ---
     

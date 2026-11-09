@@ -11,6 +11,8 @@
         "sensor.emporia_vue_channel_1_power",
         "sensor.emporia_vue_channel_2_power"
     ],
+    "emporia-rivian-entity": "sensor.rivian_charger_power_minute_average",
+    "emporia-tesla-entity": "sensor.external_lighting_power_minute_average",
     "night-time-start": 21,
     "night-time-end": 7
 }

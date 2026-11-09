@@ -226,6 +226,64 @@ class TestTeslaUnit(unittest.TestCase):
         self.assertIsNone(self.api._cached_vehicle_data)
         self.assertFalse(self.api._cache_populated)
 
+    # ------------------------------------------------------ oauth refresh
+
+    def _mock_async_session(self):
+        """Return a MagicMock that behaves like an aiohttp.ClientSession ctx mgr."""
+        mock_session = mock.MagicMock()
+        mock_session.__aenter__ = mock.AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = mock.AsyncMock(return_value=None)
+        return mock_session
+
+    def test_oauth_expired_triggers_refresh_and_retry(self):
+        """OAuthExpired should trigger a token refresh and a single retry."""
+        call_count = {'n': 0}
+
+        async def _fake_coro(api, vehicle):
+            call_count['n'] += 1
+            if call_count['n'] == 1:
+                raise tesla_module.OAuthExpired('The OAuth token has expired.')
+            return _vehicle_data()
+
+        mock_session = self._mock_async_session()
+        with mock.patch.object(self.api, '_refresh_tokens_async',
+                               new=mock.AsyncMock(return_value=True)) as refresh:
+            with mock.patch.object(self.api, '_get_parsed_key', return_value=object()):
+                with mock.patch.object(tesla_module, 'TeslaFleetApi'):
+                    with mock.patch.object(tesla_module, 'VehicleSigned'):
+                        with mock.patch.object(tesla_module.aiohttp, 'ClientSession',
+                                               return_value=mock_session):
+                            result = self.api._run_async(_fake_coro)
+        self.assertEqual(call_count['n'], 2)
+        refresh.assert_called_once()
+        self.assertIsNotNone(result)
+
+    def test_oauth_expired_refresh_failure_returns_none(self):
+        """If refresh fails, OAuthExpired should be swallowed and None returned."""
+        async def _fake_coro(api, vehicle):
+            raise tesla_module.OAuthExpired('The OAuth token has expired.')
+
+        mock_session = self._mock_async_session()
+        with mock.patch.object(self.api, '_refresh_tokens_async',
+                               new=mock.AsyncMock(return_value=False)):
+            with mock.patch.object(self.api, '_get_parsed_key', return_value=object()):
+                with mock.patch.object(tesla_module, 'TeslaFleetApi'):
+                    with mock.patch.object(tesla_module, 'VehicleSigned'):
+                        with mock.patch.object(tesla_module.aiohttp, 'ClientSession',
+                                               return_value=mock_session):
+                            result = self.api._run_async(_fake_coro)
+        self.assertIsNone(result)
+
+    def test_force_refresh_tokens(self):
+        mock_session = self._mock_async_session()
+        with mock.patch.object(self.api, '_refresh_tokens_async',
+                               new=mock.AsyncMock(return_value=True)) as refresh:
+            with mock.patch.object(tesla_module.aiohttp, 'ClientSession',
+                                   return_value=mock_session):
+                result = self.api.force_refresh_tokens()
+        self.assertTrue(result)
+        refresh.assert_called_once()
+
 
 @unittest.skipUnless(os.environ.get('TESLA_LIVE') == '1',
                      'Set TESLA_LIVE=1 to run live Tesla connectivity test')

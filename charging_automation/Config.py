@@ -15,6 +15,8 @@ class Config:
         self.homeassistant_url = None
         self.homeassistant_token = None
         self.emporia_load_entities = []
+        self.emporia_rivian_entity = None
+        self.emporia_tesla_entity = None
         self.night_time_start = None
         self.night_time_end = None
 
@@ -29,6 +31,8 @@ class Config:
             self.homeassistant_url = data.get('homeassistant-url')
             self.homeassistant_token = data.get('homeassistant-token')
             self.emporia_load_entities = data.get('emporia-load-entities', [])
+            self.emporia_rivian_entity = data.get('emporia-rivian-entity')
+            self.emporia_tesla_entity = data.get('emporia-tesla-entity')
             self.night_time_start = data['night-time-start']
             self.night_time_end = data['night-time-end']
 

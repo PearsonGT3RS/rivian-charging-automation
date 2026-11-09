@@ -117,13 +117,29 @@ class SolarEdgeAPI:
                 'No SolarEdge refresh token available. Re-run the OAuth bootstrap.'
             )
         logger.info('Refreshing SolarEdge access token...')
-        resp = requests.post(self.TOKEN_URL, json={
+        # SolarEdge v2 OAuth token endpoint expects application/x-www-form-urlencoded
+        # per RFC 6749. Sending JSON causes the server to return HTTP 500.
+        resp = requests.post(self.TOKEN_URL, data={
             'grant_type': 'refresh_token',
             'refresh_token': self._refresh_token,
             'client_id': self.client_id,
             'client_secret': self.client_secret,
         }, timeout=30)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # SolarEdge returns HTTP 500 (not 400) when the refresh token is
+            # expired or revoked. Surface the body so the cause is obvious.
+            body = resp.text
+            logger.error(
+                'SolarEdge token refresh failed: HTTP %d - %s',
+                resp.status_code, body,
+            )
+            if 'invalid_grant' in body or resp.status_code == 500:
+                logger.error(
+                    'The SolarEdge refresh token is expired or revoked. '
+                    'Re-run the OAuth bootstrap: '
+                    'python SolarEdgeAPI.py bootstrap <credentials.json> <authorization_code>'
+                )
+            resp.raise_for_status()
         self._store_token_response(resp.json())
 
     def _ensure_token(self):
@@ -168,7 +184,9 @@ class SolarEdgeAPI:
         with open(credentials_file) as f:
             credentials = json.load(f)
 
-        resp = requests.post(cls.TOKEN_URL, json={
+        # SolarEdge v2 OAuth token endpoint expects application/x-www-form-urlencoded
+        # per RFC 6749. Sending JSON causes the server to return HTTP 500.
+        resp = requests.post(cls.TOKEN_URL, data={
             'grant_type': 'authorization_code',
             'code': code,
             'client_id': credentials['solaredge-client-id'],
@@ -212,7 +230,9 @@ class SolarEdgeAPI:
         """Get current PV production in watts (latest 15-min sample)."""
         now = datetime.now(timezone.utc)
         # v2 requires ISO-8601 Instants (with Z / offset), not bare local times.
-        frm = (now - timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        # Look back 60 minutes so a single delayed/null bucket doesn't force us
+        # to fall back to a stale or zero sample.
+        frm = (now - timedelta(minutes=60)).strftime('%Y-%m-%dT%H:%M:%SZ')
         to = now.strftime('%Y-%m-%dT%H:%M:%SZ')
         try:
             data = self._get(f'/sites/{self.site_id}/power', params={
@@ -228,6 +248,18 @@ class SolarEdgeAPI:
                 value = sample.get('value')
                 if value is not None:
                     return float(value)
+            return None
+        except requests.exceptions.HTTPError as e:
+            # Distinguish auth failures (token refresh failed) from transient
+            # data errors so the operator knows whether to re-bootstrap.
+            if e.response is not None and e.response.status_code in (401, 403):
+                logger.error(
+                    'SolarEdge auth failed (%d). The refresh token is likely '
+                    'expired; re-run the OAuth bootstrap.',
+                    e.response.status_code,
+                )
+            else:
+                logger.error('Error getting current power: %s', e)
             return None
         except requests.exceptions.RequestException as e:
             logger.error('Error getting current power: %s', e)
@@ -260,8 +292,9 @@ class SolarEdgeAPI:
             load = pv
 
         grid = load - pv
-        logger.debug(
-            'SolarEdge v2: pv=%.0fW load=%.0fW grid=%.0fW', pv, load, grid,
+        logger.info(
+            'Power flow: pv=%.0fW load=%.0fW grid=%.0fW (positive grid = import)',
+            pv, load, grid,
         )
         return PowerFlow(pv=pv, grid=grid, load=load)
 

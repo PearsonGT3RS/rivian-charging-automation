@@ -101,7 +101,18 @@ class TeslaAPI:
         except Exception as e:
             logger.error(f"Failed to save Tesla session: {e}")
 
-    
+    def force_refresh_tokens(self):
+        """Manually refresh the OAuth tokens. Returns True on success.
+
+        Use this if the automation has been idle long enough that the access
+        token expired. If this returns False, the refresh token itself is
+        expired/revoked and you must re-run the Tesla OAuth flow.
+        """
+        async def _refresh():
+            async with aiohttp.ClientSession() as session:
+                return await self._refresh_tokens_async(session)
+        return asyncio.run(_refresh())
+
     def _get_parsed_key(self):
         try:
             with open(self.private_key_path, "rb") as key_file:
@@ -130,38 +141,70 @@ class TeslaAPI:
 
                 try:
                     return await coro_func(api, vehicle, *args, **kwargs)
-                    
-                except VehicleOffline:
-                    logger.debug("Tesla is asleep. Safely returning None.")
-                    return None
-                    
-                except Exception as e:
-                    # OAuthExpired is a subclass of Exception; also match string hints
-                    is_auth_error = isinstance(e, OAuthExpired) or "401" in str(e).lower() or "unauthorized" in str(e).lower()
-                    
+
+                except BaseException as e:
+                    # OAuthExpired does NOT inherit from Exception in tesla-fleet-api,
+                    # and duplicate module instances can make isinstance() unreliable.
+                    # Match by class name + message instead.
+                    if type(e).__name__ == 'VehicleOffline':
+                        logger.debug("Tesla is asleep. Safely returning None.")
+                        return None
+
+                    is_oauth_expired = (
+                        type(e).__name__ == 'OAuthExpired'
+                        or 'oauth token has expired' in str(e).lower()
+                    )
+                    if is_oauth_expired:
+                        logger.info(f"Tesla OAuth token expired ({e}). Attempting refresh...")
+                        if not await self._refresh_tokens_async(session):
+                            logger.error(
+                                "Tesla token refresh failed. The refresh token is likely "
+                                "expired or revoked. Re-run the Tesla OAuth flow to obtain "
+                                "new tokens and update the session file."
+                            )
+                            return None
+                        return await self._retry_after_refresh(
+                            session, parsed_key, coro_func, *args, **kwargs
+                        )
+
+                    # Fallback for auth errors surfaced as generic exceptions
+                    is_auth_error = "401" in str(e).lower() or "unauthorized" in str(e).lower()
                     if is_auth_error:
-                        logger.info("Tesla token expired. Attempting refresh...")
-                        if await self._refresh_tokens_async(session):
-                            # Rebuild the API objects with the fresh tokens
-                            api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
-                            api.private_key = parsed_key
-                            vehicle = VehicleSigned(api, self.vehicle_id)
-                            
-                            # Wrap the retry in a try/except so a failed retry doesn't crash main.py
-                            # --- ATTEMPT 2 (THE FIX) ---
-                            try:
-                                return await coro_func(api, vehicle, *args, **kwargs)
-                            except VehicleOffline:
-                                logger.debug("Tesla is asleep after token refresh. Safely returning None.")
-                                return None
-                            except Exception as retry_e:
-                                logger.error(f"Retry failed after token refresh: {retry_e}")
-                                return None
-                                
+                        logger.info("Tesla token expired (string match). Attempting refresh...")
+                        if not await self._refresh_tokens_async(session):
+                            logger.error(
+                                "Tesla token refresh failed. Re-authentication required."
+                            )
+                            return None
+                        return await self._retry_after_refresh(
+                            session, parsed_key, coro_func, *args, **kwargs
+                        )
+
                     logger.error(f"Tesla Request Failed: {e}")
                     return None
                     
         return asyncio.run(wrapper())
+
+    async def _retry_after_refresh(self, session, parsed_key, coro_func, *args, **kwargs):
+        """Rebuild the API client with fresh tokens and retry the coroutine once."""
+        api = TeslaFleetApi(session=session, access_token=self.access_token, region="na")
+        api.private_key = parsed_key
+        vehicle = VehicleSigned(api, self.vehicle_id) if self.vehicle_id else None
+        try:
+            return await coro_func(api, vehicle, *args, **kwargs)
+        except BaseException as retry_e:
+            if type(retry_e).__name__ == 'VehicleOffline':
+                logger.debug("Tesla is asleep after token refresh. Safely returning None.")
+                return None
+            if (type(retry_e).__name__ == 'OAuthExpired'
+                    or 'oauth token has expired' in str(retry_e).lower()):
+                logger.error(
+                    f"Tesla OAuth still expired after refresh ({retry_e}). "
+                    "Re-authentication required."
+                )
+                return None
+            logger.error(f"Retry failed after token refresh: {retry_e}")
+            return None
 
     async def _refresh_tokens_async(self, session):
         url = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
@@ -173,21 +216,29 @@ class TeslaAPI:
         }
         try:
             async with session.post(url, data=data) as resp:
-                if resp.status != 200: return False
-                tokens = await resp.json()
-                # PROPER FIX: Protect against 'None' payloads and eliminate brackets
-                if not tokens: 
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.error(
+                        f"Tesla token refresh failed: HTTP {resp.status} - {body}"
+                    )
                     return False
-                
+                tokens = await resp.json()
+                if not tokens:
+                    logger.error("Tesla token refresh returned empty payload")
+                    return False
+
                 self.access_token = tokens["access_token"]
                 self.refresh_token = tokens["refresh_token"]
 
                 if not self.access_token:
+                    logger.error("Tesla token refresh returned no access_token")
                     return False
-                
+
                 self.save_session()
+                logger.info("Tesla tokens refreshed and saved.")
                 return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"Tesla token refresh raised: {e}")
             return False
 
     # --- Commands (Synchronous Public Methods) ---

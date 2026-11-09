@@ -191,6 +191,53 @@ class TestAllocateSolarWatts(unittest.TestCase):
         self.assertEqual(TESLA_MIN_WATTS, 5 * VOLTS)
 
 
+class TestConfigEmporiaEntities(unittest.TestCase):
+    """Verify Config loads the per-EV Emporia entity keys."""
+
+    def _write_config(self, tmpdir, extra):
+        import json
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(dir=tmpdir), 'config.json')
+        base = {
+            'rivian-user': 'u',
+            'rivian-pass': 'p',
+            'solaredge-client-id': 'cid',
+            'solaredge-client-secret': 'csecret',
+            'solaredge-site-id': 'sid',
+            'night-time-start': 21,
+            'night-time-end': 7,
+        }
+        base.update(extra)
+        with open(path, 'w') as f:
+            json.dump(base, f)
+        return path
+
+    def test_ev_entities_loaded(self):
+        import tempfile
+        from Config import Config
+        path = self._write_config(tempfile.mkdtemp(), {
+            'emporia-rivian-entity': 'sensor.rivian_charger_power_minute_average',
+            'emporia-tesla-entity': 'sensor.external_lighting_power_minute_average',
+        })
+        cfg = Config(path)
+        self.assertEqual(
+            cfg.emporia_rivian_entity,
+            'sensor.rivian_charger_power_minute_average',
+        )
+        self.assertEqual(
+            cfg.emporia_tesla_entity,
+            'sensor.external_lighting_power_minute_average',
+        )
+
+    def test_ev_entities_default_to_none(self):
+        import tempfile
+        from Config import Config
+        path = self._write_config(tempfile.mkdtemp(), {})
+        cfg = Config(path)
+        self.assertIsNone(cfg.emporia_rivian_entity)
+        self.assertIsNone(cfg.emporia_tesla_entity)
+
+
 class TestCycleResult(unittest.TestCase):
     """Verify the CycleResult contract used by main.py to pick a sleep interval."""
 
@@ -204,6 +251,166 @@ class TestCycleResult(unittest.TestCase):
         self.assertNotEqual(CycleResult.IDLE, CycleResult.NIGHT_ACTIVE)
         self.assertNotEqual(CycleResult.IDLE, CycleResult.DAYTIME_ACTIVE)
         self.assertNotEqual(CycleResult.NIGHT_ACTIVE, CycleResult.DAYTIME_ACTIVE)
+
+
+class _FakePowerFlow:
+    def __init__(self, pv, load, grid):
+        self.pv = pv
+        self.load = load
+        self.grid = grid
+
+
+class _FakeConfigWithEmporia:
+    """Config stub exposing the fields run_charging_automation() reads."""
+
+    def __init__(self, rivian_entity=None, tesla_entity=None,
+                 load_entities=None, ha_url='http://ha', ha_token='tok',
+                 night_start=21, night_end=7):
+        self.rivian_user = 'u'
+        self.rivian_pass = 'p'
+        self.solaredge_client_id = 'cid'
+        self.solaredge_client_secret = 'csecret'
+        self.solaredge_site_id = 'sid'
+        self.solaredge_redirect_uri = 'http://localhost/cb'
+        self.homeassistant_url = ha_url
+        self.homeassistant_token = ha_token
+        self.emporia_load_entities = load_entities or ['sensor.load_a']
+        self.emporia_rivian_entity = rivian_entity
+        self.emporia_tesla_entity = tesla_entity
+        self.night_time_start = night_start
+        self.night_time_end = night_end
+
+
+class TestRunChargingAutomationEvDraw(unittest.TestCase):
+    """
+    Verify the EV-draw calculation in run_charging_automation():
+
+        solar_for_ev = rivian_draw + tesla_draw + available_power
+
+    where available_power = -grid, and each *_draw comes from the dedicated
+    Emporia sensor (or 0 if the sensor is missing / returns None).
+    """
+
+    def _run(self, *, pv, load, grid,
+             rivian_draw=None, tesla_draw=None,
+             rivian_entity='sensor.rivian',
+             tesla_entity='sensor.tesla',
+             rivian_connected=True, tesla_connected=True,
+             rivian_soc=40, tesla_soc=40):
+        """Run one daytime cycle with all network calls mocked.
+
+        Returns (rivian_w, tesla_w, solar_for_ev) captured from the
+        allocate_solar_watts call.
+        """
+        cfg = _FakeConfigWithEmporia(
+            rivian_entity=rivian_entity, tesla_entity=tesla_entity,
+        )
+
+        fake_rivian = mock.Mock()
+        fake_rivian.is_charger_connected.return_value = rivian_connected
+        fake_rivian.get_battery_level.return_value = rivian_soc
+        fake_rivian.is_charging.return_value = False
+        fake_rivian.get_current_schedule_amp.return_value = 0
+        fake_rivian.get_current_schedules.return_value = []
+
+        fake_tesla = mock.Mock()
+        fake_tesla.is_charger_connected.return_value = tesla_connected
+        fake_tesla.get_battery_level.return_value = tesla_soc
+        fake_tesla.get_vehicle_limit.return_value = 100
+        fake_tesla.is_charging.return_value = False
+        fake_tesla.get_current_schedule_amp.return_value = 0
+
+        fake_solaredge = mock.Mock()
+        fake_solaredge.get_current_power_flow.return_value = _FakePowerFlow(
+            pv=pv, load=load, grid=grid,
+        )
+
+        # HA stub: return the configured per-EV draw for the EV sensors,
+        # and a fixed value for the load sensors.
+        def _fake_get_sensor_value(entity_id):
+            if entity_id == rivian_entity:
+                return rivian_draw
+            if entity_id == tesla_entity:
+                return tesla_draw
+            return 0.0
+
+        fake_ha = mock.Mock()
+        fake_ha.get_sensor_value.side_effect = _fake_get_sensor_value
+        fake_ha.get_sensor_sum.return_value = load
+
+        captured = {}
+
+        def _fake_allocate(solar_for_ev, *args, **kwargs):
+            captured['solar_for_ev'] = solar_for_ev
+            return 0.0, 0.0
+
+        with mock.patch.object(ca, 'Config', return_value=cfg), \
+             mock.patch.object(ca, 'RivianAPI', return_value=fake_rivian), \
+             mock.patch.object(ca, 'TeslaAPI', return_value=fake_tesla), \
+             mock.patch.object(ca, 'SolarEdgeAPI', return_value=fake_solaredge), \
+             mock.patch.object(ca, 'HomeAssistantAPI', return_value=fake_ha), \
+             mock.patch.object(ca, 'get_automation_mode',
+                               return_value=AutomationMode.DEFAULT), \
+             mock.patch.object(ca, 'is_night_time', return_value=False), \
+             mock.patch.object(ca, 'allocate_solar_watts',
+                               side_effect=_fake_allocate), \
+             mock.patch.object(ca, 'apply_charging'):
+            ca.run_charging_automation()
+
+        return captured.get('solar_for_ev')
+
+    def test_solar_for_ev_adds_ev_draw_to_surplus(self):
+        # pv=8000, load=2000 -> grid=-6000 -> available=6000
+        # rivian_draw=2000, tesla_draw=3000 -> solar_for_ev = 11000
+        solar = self._run(pv=8000, load=2000, grid=-6000,
+                          rivian_draw=2000, tesla_draw=3000)
+        self.assertEqual(solar, 11000)
+
+    def test_solar_for_ev_with_no_ev_draw(self):
+        # EVs not drawing: solar_for_ev == available_power
+        solar = self._run(pv=8000, load=2000, grid=-6000,
+                          rivian_draw=0, tesla_draw=0)
+        self.assertEqual(solar, 6000)
+
+    def test_solar_for_ev_with_grid_import(self):
+        # grid positive (importing): available_power negative
+        # pv=1000, load=3000 -> grid=2000 -> available=-2000
+        # rivian_draw=1500, tesla_draw=0 -> solar_for_ev = -500
+        solar = self._run(pv=1000, load=3000, grid=2000,
+                          rivian_draw=1500, tesla_draw=0)
+        self.assertEqual(solar, -500)
+
+    def test_missing_rivian_sensor_falls_back_to_zero(self):
+        # rivian_entity=None -> rivian_draw_provider is None -> rivian_draw=0
+        solar = self._run(pv=8000, load=2000, grid=-6000,
+                          rivian_draw=9999, tesla_draw=3000,
+                          rivian_entity=None)
+        self.assertEqual(solar, 9000)  # 0 + 3000 + 6000
+
+    def test_missing_tesla_sensor_falls_back_to_zero(self):
+        solar = self._run(pv=8000, load=2000, grid=-6000,
+                          rivian_draw=2000, tesla_draw=9999,
+                          tesla_entity=None)
+        self.assertEqual(solar, 8000)  # 2000 + 0 + 6000
+
+    def test_none_sensor_value_falls_back_to_zero(self):
+        # Sensor configured but returns None (unavailable) -> treated as 0
+        solar = self._run(pv=8000, load=2000, grid=-6000,
+                          rivian_draw=None, tesla_draw=3000)
+        self.assertEqual(solar, 9000)  # 0 + 3000 + 6000
+
+    def test_negative_sensor_value_clamped_to_zero(self):
+        # A sensor reporting a negative value (e.g. a sign glitch) is clamped
+        solar = self._run(pv=8000, load=2000, grid=-6000,
+                          rivian_draw=-500, tesla_draw=3000)
+        self.assertEqual(solar, 9000)  # 0 + 3000 + 6000
+
+    def test_disconnected_vehicle_draw_ignored(self):
+        # Tesla disconnected -> its sensor is not read -> tesla_draw=0
+        solar = self._run(pv=8000, load=2000, grid=-6000,
+                          rivian_draw=2000, tesla_draw=9999,
+                          tesla_connected=False)
+        self.assertEqual(solar, 8000)  # 2000 + 0 + 6000
 
 
 class TestRunChargingAutomationEarlyExits(unittest.TestCase):

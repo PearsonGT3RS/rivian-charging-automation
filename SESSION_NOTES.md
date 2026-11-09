@@ -1,6 +1,6 @@
 # Charging Automation — Session Notes
 
-Last updated: 2026-11-06 (session 2)
+Last updated: 2026-11-09 (session 3, continued)
 Repo: charging_automation (SolarEdge v2 migration)
 Branch: solaredge-v2 (PR pending to main/master)
 
@@ -142,6 +142,121 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
 - f471080 — fix: handle null values in SolarEdge current power samples
   (walk backwards to newest non-null sample; return None if all null)
 
+### Session 3 commits (EV draw / solar allocation fix)
+
+- f9eebbf — fix: use commanded amps for EV draw in solar allocation
+  (initial attempt: replaced is_charging() gate with commanded amps only)
+- 363e447 — fix: gate EV current draw on is_charging to avoid phantom watt
+  allocation (refinement: use commanded amps as the *value*, but only when
+  is_charging() is True — avoids both under-counting during a wake/ramp and
+  over-counting from stale commanded amps after a session ends)
+- 602c46d — docs: update session notes with solar allocation logic and
+  session 3 commits
+- 4b480b4 — fix: estimate EV draw from recent commanded amps to handle
+  wake/ramp window (adds module-level `_last_commanded` cache with a
+  20-minute TTL; `apply_charging()` records the commanded amps, and the
+  draw calculation trusts that cache when `is_charging()` is False but a
+  recent command exists. Falls back to `live_amps * VOLTS` only when
+  `is_charging()` is True and no recent command is cached.)
+- 75d41ff — fix: cap EV draw estimate at measured load to prevent stale API
+  over-count (superseded by 2351063)
+- 2351063 — feat: read per-EV draw from dedicated Emporia sensors
+  (replaces the `_last_commanded` cache and the load-cap heuristic with
+  ground-truth readings from `sensor.rivian_charger_power_minute_average`
+  and `sensor.external_lighting_power_minute_average`; adds
+  `emporia-rivian-entity` / `emporia-tesla-entity` config keys)
+- (pending) test: add EV-draw and per-EV Emporia sensor tests
+  (test_charging_automation.py: TestRunChargingAutomationEvDraw,
+  TestConfigEmporiaEntities; test_homeassistant.py: per-EV sensor unit
+  tests + live per-EV sensor test)
+
+## Solar allocation logic (as of session 3, commit 2351063)
+
+`run_charging_automation()` computes the total solar budget for the EVs as:
+
+    solar_for_ev = current_power + available_power
+
+where:
+- `available_power = -power_flow.grid` (positive = surplus / export).
+- `current_power = rivian_draw + tesla_draw`, read directly from the
+  dedicated Emporia circuit sensors:
+    - `emporia-rivian-entity` (e.g.
+      `sensor.rivian_charger_power_minute_average`)
+    - `emporia-tesla-entity` (e.g.
+      `sensor.external_lighting_power_minute_average`)
+
+  These sensors are **already aggregated into** `emporia-load-entities`
+  (the top-level load sensors), so `load` includes the EV draw. Adding the
+  per-EV draw back to the surplus therefore yields the total solar budget:
+
+      solar_for_ev = ev_draw + (pv - load)
+                   = ev_draw + (pv - house - ev_draw)
+                   = pv - house
+
+  which is exactly the solar available for the EVs regardless of how much
+  they are currently drawing.
+
+  If a per-EV sensor is not configured or returns `None` (unavailable), that
+  vehicle's draw is treated as 0. This is conservative: we under-count the
+  EV draw, so `solar_for_ev` is smaller than it could be, and we never
+  command more than the actual surplus. Negative sensor values are clamped
+  to 0. Disconnected vehicles are not read at all.
+
+  This replaces the earlier `_last_commanded` cache (4b480b4) and the
+  load-cap heuristic (75d41ff), both of which were workarounds for the
+  unreliability of inferring EV draw from the vehicle API. The Emporia
+  sensors are ground truth and eliminate the wake/ramp window and stale
+  `charge_amps` failure modes entirely.
+
+`allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected,
+tesla_connected)` then splits the budget:
+- No vehicles connected → (0, 0).
+- Single vehicle connected → gets everything, unless SOC ≥ 100 (→ 0,0) or
+  SOC > 50 with solar_for_ev ≤ 0 (→ 0,0).
+- Both connected, both SOC > 50, no surplus → (0, 0) (Rule 4).
+- Both connected, total == 0 → (0, 0).
+- Split ratio by SOC:
+    - Both ≥ 100 → (0, 0).
+    - One ≥ 100 → other gets 100%.
+    - Both ≤ 50 → 50/50.
+    - Otherwise → lower-SOC vehicle gets 75%, higher gets 25%.
+- Minimum-watt reassignment: if a vehicle's share < its hardware minimum
+  (Rivian 1920W, Tesla 1200W), its share is reassigned to the other vehicle
+  (capped at that vehicle's AMPS_MAX × 240V). If both shares are below
+  minimum → (0, 0).
+
+The EV-draw changes (363e447, 4b480b4, 75d41ff, 2351063) only affect the
+*input* to the split (`solar_for_ev`); the split ratios and minimum-watt
+reassignment are unchanged and remain correct.
+
+### Why the vehicle-API approaches were insufficient
+
+Three successive attempts to infer EV draw from the vehicle API all failed
+in production:
+
+1. **363e447** — gate on `is_charging()`. Fixed the phantom-watt case but
+   reintroduced the under-count during the wake/ramp window. Observed
+   2026-11-09:
+
+       Power flow: pv=6331W load=5767W grid=-564W
+       Current EV Draw: 0W | Total Solar for EVs: 564W
+       Tesla: target 564W → 2A (Currently Charging: False)
+
+   The Tesla was drawing power (load=5767W includes it) but reported
+   `charging_state != 'Charging'`.
+
+2. **4b480b4** — trust the last commanded amps for 20 minutes. Fixed the
+   wake/ramp under-count but could over-count if the car finished a session
+   and the commanded amps persisted.
+
+3. **75d41ff** — cap the estimate at the measured load. Fixed the
+   over-count but still relied on the vehicle API for the value.
+
+4. **2351063** — read the draw directly from the dedicated Emporia circuit
+   sensors. This is ground truth: no inference, no staleness, no wake/ramp
+   window. The `_last_commanded` cache and the load-cap heuristic are both
+   removed.
+
 ## Known gaps / follow-ups
 
 1. docker-compose.yml in the repo does NOT mount /sessions or /app/config.json.
@@ -205,6 +320,30 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
 7. Consider adding an end-to-end daytime cycle test for
    run_charging_automation() with all APIs mocked (solar allocation +
    apply_charging path).
+8. EV-draw wake/ramp edge case — RESOLVED in 2351063 by reading the draw
+   directly from the dedicated Emporia circuit sensors. The
+   `_last_commanded` cache and the load-cap heuristic are both removed.
+   Remaining caveats:
+   - The per-EV sensors must be configured (`emporia-rivian-entity`,
+     `emporia-tesla-entity`). If missing, that vehicle's draw is treated as
+     0 (conservative under-count; never over-commands).
+   - The per-EV sensors must be aggregated into `emporia-load-entities`
+     (confirmed for the current deployment: the top-level load sensors
+     already include the EV circuits). If they are not, `load` under-reports
+     and `grid` is wrong regardless of the EV-draw logic.
+   - Consider adding a startup validation that warns if
+     `emporia-rivian-entity` / `emporia-tesla-entity` are set but not
+     present in `emporia-load-entities`.
+9. New tests added (pending commit):
+   - `test_charging_automation.py::TestRunChargingAutomationEvDraw` —
+     verifies `solar_for_ev = rivian_draw + tesla_draw + available_power`
+     across: both EVs drawing, no draw, grid import, missing sensor,
+     `None` sensor value, negative sensor value, disconnected vehicle.
+   - `test_charging_automation.py::TestConfigEmporiaEntities` — verifies
+     `Config` loads the two new keys and defaults them to `None`.
+   - `test_homeassistant.py` — per-EV sensor unit tests (Rivian, Tesla,
+     idle=0W, unavailable=None) and a live per-EV sensor test gated by
+     `HA_LIVE=1`.
 
 ## Conventions
 
