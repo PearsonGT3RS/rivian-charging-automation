@@ -17,14 +17,6 @@ CHANGE_THRESHOLD_WATTS = 500 # ignore fluctuations smaller than ~2A Rivian step
 RIVIAN_MIN_WATTS = RivianAPI.AMPS_MIN * VOLTS  # 8A * 240V = 1920W
 TESLA_MIN_WATTS = TeslaAPI.AMPS_MIN * VOLTS    # 5A * 240V = 1200W
 BMS_BUFFER_PCT = 2           # % buffer to prevent waking for minor battery sag
-# How long after commanding a charge we still trust the commanded amps as a
-# proxy for actual EV draw. Covers the wake/ramp window where is_charging()
-# transiently reports False even though the car is drawing power.
-COMMANDED_AMPS_TTL_SECONDS = 20 * 60
-
-# Module-level cache of the last commanded amps per vehicle, so we can
-# estimate EV draw across cycles even when is_charging() is unreliable.
-_last_commanded = {}  # name -> (amps, epoch_seconds)
 
 class AutomationMode(Enum):
     OFF = 0          # automation disabled
@@ -147,17 +139,9 @@ def allocate_solar_watts(solar_for_ev, rivian_soc, tesla_soc, rivian_connected, 
 
 def apply_charging(vehicle, target_watts, increment, vehicle_name, current_schedules=None):
     """Set charging amps and handle Start/Stop via Signed Commands."""
-    now = time.time()
     target_amps = watts_to_amps(target_watts, increment)
     target_amps = min(target_amps, vehicle.AMPS_MAX)
 
-    # Record the commanded amps so the next cycle can estimate EV draw even
-    # if is_charging() is transiently False (wake/ramp window).
-    if target_amps >= vehicle.AMPS_MIN:
-        _last_commanded[vehicle_name] = (target_amps, now)
-    else:
-        _last_commanded.pop(vehicle_name, None)
-    
     # Check current state (is_charging should handle offline gracefully)
     try:
         is_currently_charging = vehicle.is_charging()
@@ -213,12 +197,30 @@ def run_charging_automation():
     # Build a load provider from Home Assistant / Emporia Vue sensors.
     # If HA is not configured, load_provider stays None and SolarEdgeAPI
     # falls back to assuming load == pv (grid == 0).
+    #
+    # We also build per-EV draw providers from dedicated Emporia sensors
+    # (e.g. the Rivian charger circuit and the Tesla's circuit). These give
+    # us ground truth for what each EV is actually drawing, which is far
+    # more reliable than inferring it from the vehicle API (is_charging()
+    # is unreliable during the wake/ramp window, and charge_amps can be
+    # stale after a session ends).
     load_provider = None
-    if config.homeassistant_url and config.homeassistant_token and config.emporia_load_entities:
+    rivian_draw_provider = None
+    tesla_draw_provider = None
+    if config.homeassistant_url and config.homeassistant_token:
         ha = HomeAssistantAPI(config.homeassistant_url, config.homeassistant_token)
 
-        def load_provider():
-            return ha.get_sensor_sum(config.emporia_load_entities)
+        if config.emporia_load_entities:
+            def load_provider():
+                return ha.get_sensor_sum(config.emporia_load_entities)
+
+        if config.emporia_rivian_entity:
+            def rivian_draw_provider():
+                return ha.get_sensor_value(config.emporia_rivian_entity)
+
+        if config.emporia_tesla_entity:
+            def tesla_draw_provider():
+                return ha.get_sensor_value(config.emporia_tesla_entity)
 
     rivian_connected = rivian.is_charger_connected()
     tesla_connected = tesla.is_charger_connected()
@@ -417,8 +419,8 @@ def run_charging_automation():
     logger.info('Rivian SOC: %d%%  Tesla SOC: %d%%', rivian_soc, tesla_soc)
 
     # 4. Calculate real-time consumption
-    # Fetch Rivian schedules once and reuse for both the current-power calc
-    # and the subsequent apply_charging() call to avoid a redundant API round-trip.
+    # Fetch Rivian schedules once and reuse for the subsequent apply_charging()
+    # call to avoid a redundant API round-trip.
     rivian_schedules = None
     if rivian_connected:
         try:
@@ -431,68 +433,42 @@ def run_charging_automation():
     # drawing, so we must add that draw back to the surplus to get the total
     # solar budget for the EVs.
     #
-    # We estimate the draw from the *commanded* amps (schedule / charge_amps),
-    # because is_charging() is unreliable during the wake/ramp window: the car
-    # can be drawing power while reporting charging_state != 'Charging'. Using
-    # is_charging() as a gate caused us to under-count the draw and allocate
-    # only the *new* surplus instead of (existing draw + new surplus).
+    # We read each EV's draw directly from its dedicated Emporia sensor
+    # (rivian_charger_power_minute_average / external_lighting_power_minute_average).
+    # This is ground truth and avoids the failure modes of inferring draw from
+    # the vehicle API:
+    #   - is_charging() is unreliable during the wake/ramp window (car draws
+    #     power while reporting charging_state != 'Charging').
+    #   - charge_amps can be stale after a session ends (car reports a
+    #     commanded amp but is drawing 0W).
     #
-    # To avoid over-counting from stale commanded amps (e.g. the car finished
-    # a session but the last-set amps persist), we only trust the commanded
-    # amps for COMMANDED_AMPS_TTL_SECONDS after we last commanded a charge.
-    now_ts = time.time()
-    current_power = 0.0
-
-    def _commanded_draw(name, live_amps):
-        """Return the EV draw estimate for `name`, or 0 if stale/unknown."""
-        cached = _last_commanded.get(name)
-        if cached is not None:
-            amps, ts = cached
-            if now_ts - ts <= COMMANDED_AMPS_TTL_SECONDS:
-                return amps * VOLTS
-        # No recent command: fall back to the live commanded amps only if the
-        # vehicle reports it is actually charging (avoids phantom watts).
-        return live_amps * VOLTS
-
-    if rivian_connected and rivian_schedules:
+    # If a per-EV sensor is not configured or returns None, we fall back to 0
+    # for that vehicle (conservative: we under-count rather than over-count,
+    # so we never command more than the actual surplus).
+    rivian_draw = 0.0
+    tesla_draw = 0.0
+    if rivian_connected and rivian_draw_provider is not None:
         try:
-            live_amps = rivian_schedules[0].get('amperage', 0)
-            if rivian.is_charging():
-                current_power += live_amps * VOLTS
-            else:
-                current_power += _commanded_draw('Rivian', live_amps)
-        except Exception:
-            pass
-    if tesla_connected:
+            value = rivian_draw_provider()
+            if value is not None:
+                rivian_draw = max(0.0, value)
+        except Exception as e:
+            logger.warning('Failed to read Rivian draw sensor: %s', e)
+    if tesla_connected and tesla_draw_provider is not None:
         try:
-            live_amps = tesla.get_current_schedule_amp()
-            if tesla.is_charging():
-                current_power += live_amps * VOLTS
-            else:
-                current_power += _commanded_draw('Tesla', live_amps)
-        except Exception:
-            pass
+            value = tesla_draw_provider()
+            if value is not None:
+                tesla_draw = max(0.0, value)
+        except Exception as e:
+            logger.warning('Failed to read Tesla draw sensor: %s', e)
 
-
-    # Sanity check: the EV cannot be drawing more than the total measured
-    # load. If the vehicle API reports a commanded draw that exceeds the
-    # Emporia load, the API is stale/wrong (e.g. the car reports
-    # charging_state='Charging' but is paused at its limit, or charge_amps
-    # is left over from a previous session). Trust Emporia and cap.
-    #
-    # This also guarantees solar_for_ev <= pv, since
-    #   solar_for_ev = current_power + (pv - load)
-    # and capping current_power at load gives solar_for_ev <= pv.
-    if current_power > power_flow.load:
-        logger.warning(
-            'EV draw estimate %.0fW exceeds measured load %.0fW; '
-            'capping to load (vehicle API likely stale).',
-            current_power, power_flow.load,
-        )
-        current_power = max(0.0, power_flow.load)
-
+    current_power = rivian_draw + tesla_draw
     solar_for_ev = current_power + available_power
-    logger.info('Current EV Draw: %.0fW | Total Solar for EVs: %.0fW', current_power, solar_for_ev)
+    logger.info(
+        'Current EV Draw: %.0fW (Rivian %.0fW + Tesla %.0fW) | '
+        'Total Solar for EVs: %.0fW',
+        current_power, rivian_draw, tesla_draw, solar_for_ev,
+    )
 
     # --- INTEGRATED LOGIC PIECE ---
     
