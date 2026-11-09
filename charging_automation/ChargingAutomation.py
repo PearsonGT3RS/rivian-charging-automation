@@ -17,6 +17,14 @@ CHANGE_THRESHOLD_WATTS = 500 # ignore fluctuations smaller than ~2A Rivian step
 RIVIAN_MIN_WATTS = RivianAPI.AMPS_MIN * VOLTS  # 8A * 240V = 1920W
 TESLA_MIN_WATTS = TeslaAPI.AMPS_MIN * VOLTS    # 5A * 240V = 1200W
 BMS_BUFFER_PCT = 2           # % buffer to prevent waking for minor battery sag
+# How long after commanding a charge we still trust the commanded amps as a
+# proxy for actual EV draw. Covers the wake/ramp window where is_charging()
+# transiently reports False even though the car is drawing power.
+COMMANDED_AMPS_TTL_SECONDS = 20 * 60
+
+# Module-level cache of the last commanded amps per vehicle, so we can
+# estimate EV draw across cycles even when is_charging() is unreliable.
+_last_commanded = {}  # name -> (amps, epoch_seconds)
 
 class AutomationMode(Enum):
     OFF = 0          # automation disabled
@@ -142,6 +150,13 @@ def apply_charging(vehicle, target_watts, increment, vehicle_name, current_sched
     now = time.time()
     target_amps = watts_to_amps(target_watts, increment)
     target_amps = min(target_amps, vehicle.AMPS_MAX)
+
+    # Record the commanded amps so the next cycle can estimate EV draw even
+    # if is_charging() is transiently False (wake/ramp window).
+    if target_amps >= vehicle.AMPS_MIN:
+        _last_commanded[vehicle_name] = (target_amps, now)
+    else:
+        _last_commanded.pop(vehicle_name, None)
     
     # Check current state (is_charging should handle offline gracefully)
     try:
@@ -414,26 +429,47 @@ def run_charging_automation():
 
     # Current EV draw: Emporia's load already includes whatever the EV is
     # drawing, so we must add that draw back to the surplus to get the total
-    # solar budget for the EVs. We use the *commanded* amps (schedule /
-    # charge_amps) as the value, but only when the vehicle reports it is
-    # actually charging. This avoids two failure modes:
-    #   1. is_charging() transiently False (right after a wake, or while the
-    #      car is ramping) would under-count the draw and cause us to allocate
-    #      only the *new* surplus instead of (existing draw + new surplus).
-    #   2. A stale commanded amp (e.g. the car just finished a session but the
-    #      last-set amps persist) would over-count the draw and cause us to
-    #      allocate phantom watts, importing from the grid.
+    # solar budget for the EVs.
+    #
+    # We estimate the draw from the *commanded* amps (schedule / charge_amps),
+    # because is_charging() is unreliable during the wake/ramp window: the car
+    # can be drawing power while reporting charging_state != 'Charging'. Using
+    # is_charging() as a gate caused us to under-count the draw and allocate
+    # only the *new* surplus instead of (existing draw + new surplus).
+    #
+    # To avoid over-counting from stale commanded amps (e.g. the car finished
+    # a session but the last-set amps persist), we only trust the commanded
+    # amps for COMMANDED_AMPS_TTL_SECONDS after we last commanded a charge.
+    now_ts = time.time()
     current_power = 0.0
+
+    def _commanded_draw(name, live_amps):
+        """Return the EV draw estimate for `name`, or 0 if stale/unknown."""
+        cached = _last_commanded.get(name)
+        if cached is not None:
+            amps, ts = cached
+            if now_ts - ts <= COMMANDED_AMPS_TTL_SECONDS:
+                return amps * VOLTS
+        # No recent command: fall back to the live commanded amps only if the
+        # vehicle reports it is actually charging (avoids phantom watts).
+        return live_amps * VOLTS
+
     if rivian_connected and rivian_schedules:
         try:
+            live_amps = rivian_schedules[0].get('amperage', 0)
             if rivian.is_charging():
-                current_power += rivian_schedules[0].get('amperage', 0) * VOLTS
+                current_power += live_amps * VOLTS
+            else:
+                current_power += _commanded_draw('Rivian', live_amps)
         except Exception:
             pass
     if tesla_connected:
         try:
+            live_amps = tesla.get_current_schedule_amp()
             if tesla.is_charging():
-                current_power += tesla.get_current_schedule_amp() * VOLTS
+                current_power += live_amps * VOLTS
+            else:
+                current_power += _commanded_draw('Tesla', live_amps)
         except Exception:
             pass
 
