@@ -1,6 +1,6 @@
 # Charging Automation — Session Notes
 
-Last updated: 2026-11-10 (session 4)
+Last updated: 2026-11-10 (session 5)
 Repo: charging_automation (SolarEdge v2 migration)
 Branch: solaredge-v2 (PR pending to main/master)
 
@@ -69,9 +69,9 @@ Assistant so we can compute grid flow (grid = load - pv).
 
 Local (no network):
     cd charging_automation && python -m unittest discover -s tests -v
-Result: 108 tests, OK (3 skipped — Tesla suite skipped when
-tesla-fleet-api / cryptography are not installed; live tests gated by
-HA_LIVE / SOLAREDGE_LIVE / TESLA_LIVE / RIVIAN_LIVE).
+Result: 146 tests, OK (8 skipped — live tests gated by
+HA_LIVE / SOLAREDGE_LIVE / TESLA_LIVE / RIVIAN_LIVE; Tesla unit tests
+run when tesla-fleet-api / cryptography are installed).
 
 Live tests are gated by env vars and are read-only:
     HA_LIVE=1 SOLAREDGE_LIVE=1 TESLA_LIVE=1 RIVIAN_LIVE=1 \
@@ -151,6 +151,23 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
   TESLA_LIVE=1 / RIVIAN_LIVE=1)
 - f471080 — fix: handle null values in SolarEdge current power samples
   (walk backwards to newest non-null sample; return None if all null)
+
+### Session 5 commits (test fixes + live HA PV test + config docs)
+
+- 327dd73 — test: add live HA PV sensor test
+  (`TestHomeAssistantLive.test_live_pv_sensors` reads
+  `emporia-pv-lead-entity` / `emporia-pv-follower-entity`, asserts both
+  are numeric and non-negative, prints the PV total; skips if either key
+  is unset)
+- 0c8ac4a — test: fix fake config and vehicle setup in charging automation
+  tests (`_FakeConfigWithEmporia` now distinguishes `load_entities=None`
+  from `load_entities=[]`; `TestPvSourceSelection` and
+  `TestKeepaliveAlwaysRuns` now mark at least one vehicle as connected so
+  the cycle reaches the daytime power-flow / keepalive steps instead of
+  returning at the "No chargers plugged in" early exit)
+- d313e7c — docs: add emporia PV lead and follower entity examples to config
+  (`config-example.json` now includes `emporia-pv-lead-entity` and
+  `emporia-pv-follower-entity`)
 
 ### Session 4 commits (HA PV preference + keepalive)
 
@@ -364,28 +381,27 @@ in production:
 1. Commit the Dockerfile rewrite (currently uncommitted on solaredge-v2):
        git add Dockerfile
        git commit -m "build: rewrite Dockerfile for slim-bookworm, non-root user, and /sessions mount"
-2. Update `config-example.json` with the two new PV keys
-   (`emporia-pv-lead-entity`, `emporia-pv-follower-entity`) — see
-   Known gaps #11.
-3. Add a live HA PV test (gated by `HA_LIVE=1`) that reads both inverter
-   sensors — see Known gaps #10.
-4. Push solaredge-v2 and open the PR (see pr-body.md):
+2. Push solaredge-v2 and open the PR (see pr-body.md):
        git push -u origin solaredge-v2
        gh pr create --base main --head solaredge-v2 \
          --title "Migrate to SolarEdge v2 OAuth + Emporia load via Home Assistant" \
          --body-file pr-body.md
    (If push fails with "Password authentication is not supported", configure
    a PAT or SSH key first — see Known gaps #7.)
-5. Rotate the SolarEdge client secret (see Known gaps #6) and re-run the
+3. Rotate the SolarEdge client secret (see Known gaps #6) and re-run the
    OAuth bootstrap to regenerate /sessions/solaredge-token.json.
-6. Run the full live suite (HA + SolarEdge):
+4. Run the full live suite (HA + SolarEdge):
        cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
-7. Confirm the Tesla unit tests actually run in an environment where
+5. Confirm the Tesla unit tests actually run in an environment where
    tesla-fleet-api / cryptography are installed (currently skipped locally).
-8. Run the Tesla and Rivian live tests (read-only) to confirm connectivity:
+6. Run the Tesla and Rivian live tests (read-only) to confirm connectivity:
        TESLA_LIVE=1 python -m unittest tests.test_tesla.TestTeslaLive -v
        RIVIAN_LIVE=1 python -m unittest tests.test_rivian.TestRivianLive -v
-9. Verify the HA PV preference in production: confirm the log line
+7. Run the live HA PV test against the real Home Assistant instance:
+       cd charging_automation && HA_LIVE=1 python -m unittest tests.test_homeassistant.TestHomeAssistantLive -v
+   Confirm `test_live_pv_sensors` prints both inverter readings and a
+   non-zero PV total during daylight.
+8. Verify the HA PV preference in production: confirm the log line
    `PV source: homeassistant` appears during daylight cycles and that
    `pv` matches the sum of the two inverter sensors.
    - `test_charging_automation.py::TestPvSourceSelection` — verifies HA
@@ -393,14 +409,8 @@ in production:
    - `test_charging_automation.py::TestKeepaliveAlwaysRuns` — verifies
      the keepalive refresh runs on every cycle (day and night).
    - `test_homeassistant.py` — per-EV sensor unit tests (Rivian, Tesla,
-     idle=0W, unavailable=None) and a live per-EV sensor test gated by
-     `HA_LIVE=1`.
-10. HA PV sensors (`emporia-pv-lead-entity`, `emporia-pv-follower-entity`)
-    are new in c00e0bf and have not yet been exercised against the live
-    Home Assistant instance. Add a live test (gated by `HA_LIVE=1`) that
-    reads both sensors and asserts they are numeric and non-negative.
-11. `config-example.json` has not yet been updated with the two new PV
-    keys (`emporia-pv-lead-entity`, `emporia-pv-follower-entity`).
+     idle=0W, unavailable=None), a live per-EV sensor test, and a live
+     PV sensor test, all gated by `HA_LIVE=1`.
 
 ## Conventions
 
