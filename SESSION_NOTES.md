@@ -376,42 +376,18 @@ in production:
          --body-file pr-body.md
    (If push fails with "Password authentication is not supported", configure
    a PAT or SSH key first — see Known gaps #7.)
-3. Rotate the SolarEdge client secret (see Known gaps #6) and re-run the
+5. Rotate the SolarEdge client secret (see Known gaps #6) and re-run the
    OAuth bootstrap to regenerate /sessions/solaredge-token.json.
-4. Run the full live suite (HA + SolarEdge):
+6. Run the full live suite (HA + SolarEdge):
        cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
-5. Confirm the Tesla unit tests actually run in an environment where
+7. Confirm the Tesla unit tests actually run in an environment where
    tesla-fleet-api / cryptography are installed (currently skipped locally).
-6. Run the Tesla and Rivian live tests (read-only) to confirm connectivity:
+8. Run the Tesla and Rivian live tests (read-only) to confirm connectivity:
        TESLA_LIVE=1 python -m unittest tests.test_tesla.TestTeslaLive -v
        RIVIAN_LIVE=1 python -m unittest tests.test_rivian.TestRivianLive -v
-7. Consider adding an end-to-end daytime cycle test for
-   run_charging_automation() with all APIs mocked (solar allocation +
-   apply_charging path).
-8. EV-draw wake/ramp edge case — RESOLVED in 2351063 by reading the draw
-   directly from the dedicated Emporia circuit sensors. The
-   `_last_commanded` cache and the load-cap heuristic are both removed.
-   Remaining caveats:
-   - The per-EV sensors must be configured (`emporia-rivian-entity`,
-     `emporia-tesla-entity`). If missing, that vehicle's draw is treated as
-     0 (conservative under-count; never over-commands).
-   - The per-EV sensors must be aggregated into `emporia-load-entities`
-     (confirmed for the current deployment: the top-level load sensors
-     already include the EV circuits). If they are not, `load` under-reports
-     and `grid` is wrong regardless of the EV-draw logic.
-   - Startup validation added in cd71187 (`validate_emporia_config()`).
-9. New tests added (committed in cd71187 and c00e0bf):
-   - `test_charging_automation.py::TestRunChargingAutomationEvDraw` —
-     verifies `solar_for_ev = rivian_draw + tesla_draw + available_power`
-     across: both EVs drawing, no draw, grid import, missing sensor,
-     `None` sensor value, negative sensor value, disconnected vehicle.
-   - `test_charging_automation.py::TestConfigEmporiaEntities` — verifies
-     `Config` loads the two new keys and defaults them to `None`.
-   - `test_charging_automation.py::TestValidateEmporiaConfig` — verifies
-     the startup warning for per-EV entities missing from
-     `emporia-load-entities`.
-   - `test_charging_automation.py::TestRunChargingAutomationDaytimeCycle`
-     — end-to-end daytime cycle with all APIs mocked.
+9. Verify the HA PV preference in production: confirm the log line
+   `PV source: homeassistant` appears during daylight cycles and that
+   `pv` matches the sum of the two inverter sensors.
    - `test_charging_automation.py::TestPvSourceSelection` — verifies HA
      PV is preferred and SolarEdge is used as fallback.
    - `test_charging_automation.py::TestKeepaliveAlwaysRuns` — verifies
