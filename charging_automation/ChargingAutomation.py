@@ -57,6 +57,32 @@ def get_night_charging_limit(hubitat):
     return hubitat.get_night_charging_limit()
 
 
+def validate_emporia_config(config):
+    """
+    Warn if a per-EV Emporia entity is configured but not aggregated into
+    emporia-load-entities.
+
+    The solar allocation math assumes the top-level load sensors already
+    include the EV circuits (see SESSION_NOTES.md). If they don't, `load`
+    under-reports, `grid` is wrong, and the EV-draw correction double-counts.
+    This is a warning only; it does not change behavior.
+    """
+    load_entities = set(config.emporia_load_entities or [])
+    if not load_entities:
+        return
+    for label, entity in (
+        ('emporia-rivian-entity', config.emporia_rivian_entity),
+        ('emporia-tesla-entity', config.emporia_tesla_entity),
+    ):
+        if entity and entity not in load_entities:
+            logger.warning(
+                '%s (%s) is not listed in emporia-load-entities. The EV-draw '
+                'correction assumes the load sensors already include the EV '
+                'circuits; if they do not, grid will be miscomputed.',
+                label, entity,
+            )
+
+
 def watts_to_amps(watts, increment):
     """Convert watts to amps, rounding DOWN to the nearest valid increment to avoid grid draw."""
     return math.floor((watts / VOLTS) / increment) * increment
@@ -209,6 +235,7 @@ def run_charging_automation():
     tesla_draw_provider = None
     if config.homeassistant_url and config.homeassistant_token:
         ha = HomeAssistantAPI(config.homeassistant_url, config.homeassistant_token)
+        validate_emporia_config(config)
 
         if config.emporia_load_entities:
             def load_provider():
