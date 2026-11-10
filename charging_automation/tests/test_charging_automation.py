@@ -338,7 +338,9 @@ class _FakeConfigWithEmporia:
         self.solaredge_redirect_uri = 'http://localhost/cb'
         self.homeassistant_url = ha_url
         self.homeassistant_token = ha_token
-        self.emporia_load_entities = load_entities or ['sensor.load_a']
+        self.emporia_load_entities = (
+            ['sensor.load_a'] if load_entities is None else load_entities
+        )
         self.emporia_rivian_entity = rivian_entity
         self.emporia_tesla_entity = tesla_entity
         self.emporia_pv_lead_entity = pv_lead_entity
@@ -597,8 +599,15 @@ class TestPvSourceSelection(unittest.TestCase):
             pv_follower_entity=pv_follower_entity,
         )
 
+        # At least one vehicle must be connected, otherwise the cycle
+        # returns at the "No chargers plugged in" early exit before
+        # reaching the daytime power-flow step.
         fake_rivian = mock.Mock()
-        fake_rivian.is_charger_connected.return_value = False
+        fake_rivian.is_charger_connected.return_value = True
+        fake_rivian.get_battery_level.return_value = 40
+        fake_rivian.is_charging.return_value = False
+        fake_rivian.get_current_schedule_amp.return_value = 0
+        fake_rivian.get_current_schedules.return_value = []
         fake_tesla = mock.Mock()
         fake_tesla.is_charger_connected.return_value = False
 
@@ -662,8 +671,15 @@ class TestKeepaliveAlwaysRuns(unittest.TestCase):
     def _run(self, *, night):
         cfg = _FakeConfigWithEmporia()
 
+        # At least one vehicle must be connected, otherwise the cycle
+        # returns at the "No chargers plugged in" early exit before
+        # reaching the keepalive call.
         fake_rivian = mock.Mock()
-        fake_rivian.is_charger_connected.return_value = False
+        fake_rivian.is_charger_connected.return_value = True
+        fake_rivian.get_battery_level.return_value = 40
+        fake_rivian.is_charging.return_value = False
+        fake_rivian.get_current_schedule_amp.return_value = 0
+        fake_rivian.get_current_schedules.return_value = []
         fake_tesla = mock.Mock()
         fake_tesla.is_charger_connected.return_value = False
 
