@@ -13,6 +13,8 @@
     ],
     "emporia-rivian-entity": "sensor.rivian_charger_power_minute_average",
     "emporia-tesla-entity": "sensor.external_lighting_power_minute_average",
+    "emporia-pv-lead-entity": "sensor.pv_lead_power_minute_average",
+    "emporia-pv-follower-entity": "sensor.pv_follower_power_minute_average",
     "night-time-start": 21,
     "night-time-end": 7
 }
