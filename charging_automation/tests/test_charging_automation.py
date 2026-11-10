@@ -328,7 +328,8 @@ class _FakeConfigWithEmporia:
 
     def __init__(self, rivian_entity=None, tesla_entity=None,
                  load_entities=None, ha_url='http://ha', ha_token='tok',
-                 night_start=21, night_end=7):
+                 night_start=21, night_end=7,
+                 pv_lead_entity=None, pv_follower_entity=None):
         self.rivian_user = 'u'
         self.rivian_pass = 'p'
         self.solaredge_client_id = 'cid'
@@ -340,6 +341,8 @@ class _FakeConfigWithEmporia:
         self.emporia_load_entities = load_entities or ['sensor.load_a']
         self.emporia_rivian_entity = rivian_entity
         self.emporia_tesla_entity = tesla_entity
+        self.emporia_pv_lead_entity = pv_lead_entity
+        self.emporia_pv_follower_entity = pv_follower_entity
         self.night_time_start = night_start
         self.night_time_end = night_end
 
@@ -384,8 +387,10 @@ class TestRunChargingAutomationEvDraw(unittest.TestCase):
         fake_tesla.get_current_schedule_amp.return_value = 0
 
         fake_solaredge = mock.Mock()
-        fake_solaredge.get_current_power_flow.return_value = _FakePowerFlow(
-            pv=pv, load=load, grid=grid,
+        fake_solaredge.get_current_power_flow.side_effect = (
+            lambda load_provider=None, pv_override=None: _FakePowerFlow(
+                pv=pv, load=load, grid=grid,
+            )
         )
 
         # HA stub: return the configured per-EV draw for the EV sensors,
@@ -509,8 +514,10 @@ class TestRunChargingAutomationDaytimeCycle(unittest.TestCase):
         fake_tesla.get_current_schedule_amp.return_value = 0
 
         fake_solaredge = mock.Mock()
-        fake_solaredge.get_current_power_flow.return_value = _FakePowerFlow(
-            pv=pv, load=load, grid=grid,
+        fake_solaredge.get_current_power_flow.side_effect = (
+            lambda load_provider=None, pv_override=None: _FakePowerFlow(
+                pv=pv, load=load, grid=grid,
+            )
         )
 
         def _fake_get_sensor_value(entity_id):
@@ -576,6 +583,117 @@ class TestRunChargingAutomationDaytimeCycle(unittest.TestCase):
         self.assertEqual(mock_apply.call_count, 0)
 
 
+class TestPvSourceSelection(unittest.TestCase):
+    """
+    Verify PV source selection: prefer HA (lead + follower), fall back to
+    SolarEdge when HA PV is unavailable.
+    """
+
+    def _run(self, *, ha_lead, ha_follower, solaredge_pv,
+             pv_lead_entity='sensor.pv_lead',
+             pv_follower_entity='sensor.pv_follower'):
+        cfg = _FakeConfigWithEmporia(
+            pv_lead_entity=pv_lead_entity,
+            pv_follower_entity=pv_follower_entity,
+        )
+
+        fake_rivian = mock.Mock()
+        fake_rivian.is_charger_connected.return_value = False
+        fake_tesla = mock.Mock()
+        fake_tesla.is_charger_connected.return_value = False
+
+        def _fake_get_sensor_value(entity_id):
+            if entity_id == pv_lead_entity:
+                return ha_lead
+            if entity_id == pv_follower_entity:
+                return ha_follower
+            return 0.0
+
+        fake_ha = mock.Mock()
+        fake_ha.get_sensor_value.side_effect = _fake_get_sensor_value
+        fake_ha.get_sensor_sum.return_value = 1000.0
+
+        fake_solaredge = mock.Mock()
+        fake_solaredge.get_current_power.return_value = solaredge_pv
+        fake_solaredge.get_current_power_flow.side_effect = (
+            lambda load_provider=None, pv_override=None: _FakePowerFlow(
+                pv=pv_override if pv_override is not None else solaredge_pv,
+                load=1000.0,
+                grid=1000.0 - (pv_override if pv_override is not None else solaredge_pv),
+            )
+        )
+
+        with mock.patch.object(ca, 'Config', return_value=cfg), \
+             mock.patch.object(ca, 'RivianAPI', return_value=fake_rivian), \
+             mock.patch.object(ca, 'TeslaAPI', return_value=fake_tesla), \
+             mock.patch.object(ca, 'SolarEdgeAPI', return_value=fake_solaredge), \
+             mock.patch.object(ca, 'HomeAssistantAPI', return_value=fake_ha), \
+             mock.patch.object(ca, 'get_automation_mode',
+                               return_value=AutomationMode.DEFAULT), \
+             mock.patch.object(ca, 'is_night_time', return_value=False), \
+             mock.patch.object(ca, 'apply_charging'):
+            ca.run_charging_automation()
+
+        return fake_solaredge.get_current_power_flow.call_args
+
+    def test_uses_ha_pv_when_both_sensors_available(self):
+        call = self._run(ha_lead=2000, ha_follower=1500, solaredge_pv=9999)
+        self.assertEqual(call.kwargs['pv_override'], 3500)
+
+    def test_falls_back_to_solaredge_when_lead_unavailable(self):
+        call = self._run(ha_lead=None, ha_follower=1500, solaredge_pv=9999)
+        self.assertIsNone(call.kwargs['pv_override'])
+
+    def test_falls_back_to_solaredge_when_follower_unavailable(self):
+        call = self._run(ha_lead=2000, ha_follower=None, solaredge_pv=9999)
+        self.assertIsNone(call.kwargs['pv_override'])
+
+    def test_falls_back_to_solaredge_when_pv_entities_not_configured(self):
+        call = self._run(
+            ha_lead=2000, ha_follower=1500, solaredge_pv=9999,
+            pv_lead_entity=None, pv_follower_entity=None,
+        )
+        self.assertIsNone(call.kwargs['pv_override'])
+
+
+class TestKeepaliveAlwaysRuns(unittest.TestCase):
+    """Verify the SolarEdge keepalive refresh runs on every cycle (day and night)."""
+
+    def _run(self, *, night):
+        cfg = _FakeConfigWithEmporia()
+
+        fake_rivian = mock.Mock()
+        fake_rivian.is_charger_connected.return_value = False
+        fake_tesla = mock.Mock()
+        fake_tesla.is_charger_connected.return_value = False
+
+        fake_solaredge = mock.Mock()
+        fake_solaredge.get_current_power_flow.return_value = _FakePowerFlow(
+            pv=0, load=0, grid=0,
+        )
+
+        with mock.patch.object(ca, 'Config', return_value=cfg), \
+             mock.patch.object(ca, 'RivianAPI', return_value=fake_rivian), \
+             mock.patch.object(ca, 'TeslaAPI', return_value=fake_tesla), \
+             mock.patch.object(ca, 'SolarEdgeAPI', return_value=fake_solaredge), \
+             mock.patch.object(ca, 'HomeAssistantAPI'), \
+             mock.patch.object(ca, 'get_automation_mode',
+                               return_value=AutomationMode.DEFAULT), \
+             mock.patch.object(ca, 'is_night_time', return_value=night), \
+             mock.patch.object(ca, 'apply_charging'):
+            ca.run_charging_automation()
+
+        return fake_solaredge._maybe_keepalive_refresh
+
+    def test_keepalive_runs_during_day(self):
+        mock_keepalive = self._run(night=False)
+        mock_keepalive.assert_called_once()
+
+    def test_keepalive_runs_during_night(self):
+        mock_keepalive = self._run(night=True)
+        mock_keepalive.assert_called_once()
+
+
 class TestRunChargingAutomationEarlyExits(unittest.TestCase):
     """Exercise the early-return paths of run_charging_automation() without network."""
 
@@ -623,6 +741,7 @@ class TestRunChargingAutomationEarlyExits(unittest.TestCase):
         fake_solaredge.get_current_power_flow.side_effect = LoadUnavailableError(
             'load_provider returned None'
         )
+        fake_solaredge._maybe_keepalive_refresh = mock.Mock()
 
         cfg = _FakeConfigWithEmporia()
 

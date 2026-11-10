@@ -42,10 +42,11 @@ class SolarEdgeAPI:
     DEFAULT_TOKEN_FILE = "/sessions/solaredge-token.json"
     # Refresh proactively if the access token has less than this many seconds left.
     REFRESH_SKEW_SECONDS = 300
-    # Refresh tokens expire after 14 days of non-use. During night hours we
-    # don't need live data, but we still refresh periodically to keep the
-    # token chain alive. 7 days leaves a comfortable margin.
-    KEEPALIVE_INTERVAL_SECONDS = 7 * 24 * 60 * 60
+    # Refresh tokens expire after 14 days of non-use. We refresh every 6 days
+    # to keep the token chain alive with a comfortable margin, regardless of
+    # whether the SolarEdge data endpoint is being used (HA PV may be the
+    # primary source).
+    KEEPALIVE_INTERVAL_SECONDS = 6 * 24 * 60 * 60
 
     def __init__(self, credentials_file, token_file=None):
         """Initialize with credentials file path and (optional) token cache path."""
@@ -265,7 +266,7 @@ class SolarEdgeAPI:
             logger.error('Error getting current power: %s', e)
             return None
 
-    def get_current_power_flow(self, load_provider=None):
+    def get_current_power_flow(self, load_provider=None, pv_override=None):
         """
         Compute power flow from v2 PV data plus an external load source.
 
@@ -274,10 +275,18 @@ class SolarEdgeAPI:
         grid = load - pv. If the provider returns None, LoadUnavailableError is
         raised so the caller can abort rather than charge blind. If no provider
         is supplied, we fall back to assuming load == pv (grid == 0).
+
+        If pv_override is supplied (a numeric PV value in watts), it is used
+        instead of calling the SolarEdge /power endpoint. This lets callers
+        prefer an alternate PV source (e.g. Home Assistant / Modbus) while
+        still reusing the PowerFlow construction and logging here.
         """
-        pv = self.get_current_power()
-        if pv is None:
-            return None
+        if pv_override is not None:
+            pv = float(pv_override)
+        else:
+            pv = self.get_current_power()
+            if pv is None:
+                return None
 
         if load_provider is not None:
             load = load_provider()

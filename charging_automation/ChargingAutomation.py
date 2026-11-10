@@ -233,6 +233,7 @@ def run_charging_automation():
     load_provider = None
     rivian_draw_provider = None
     tesla_draw_provider = None
+    pv_provider = None
     if config.homeassistant_url and config.homeassistant_token:
         ha = HomeAssistantAPI(config.homeassistant_url, config.homeassistant_token)
         validate_emporia_config(config)
@@ -249,6 +250,18 @@ def run_charging_automation():
             def tesla_draw_provider():
                 return ha.get_sensor_value(config.emporia_tesla_entity)
 
+        # PV from Home Assistant (Modbus-backed Emporia inverter sensors).
+        # Two inverters (lead + follower) must be summed. If either sensor is
+        # missing or unavailable, pv_provider returns None and the caller
+        # falls back to the SolarEdge API.
+        if config.emporia_pv_lead_entity and config.emporia_pv_follower_entity:
+            def pv_provider():
+                lead = ha.get_sensor_value(config.emporia_pv_lead_entity)
+                follower = ha.get_sensor_value(config.emporia_pv_follower_entity)
+                if lead is None or follower is None:
+                    return None
+                return lead + follower
+
     rivian_connected = rivian.is_charger_connected()
     tesla_connected = tesla.is_charger_connected()
 
@@ -261,16 +274,17 @@ def run_charging_automation():
         return CycleResult.IDLE
 
 
+    # Keep the SolarEdge refresh token alive regardless of day/night and
+    # regardless of whether HA PV is the primary source. v2 invalidates
+    # refresh tokens after 14 days of non-use; this fires at most once per
+    # KEEPALIVE_INTERVAL_SECONDS (6 days).
+    try:
+        SolarEdgeAPI('/app/config.json')._maybe_keepalive_refresh()
+    except Exception as e:
+        logger.warning('SolarEdge keepalive check failed: %s', e)
+
     # --- NIGHT TIME HANDLING ---
     if is_night_time(config):
-
-        # Keep the SolarEdge refresh token alive without polling live data.
-        # v2 invalidates refresh tokens after 14 days of non-use; this fires
-        # at most once per KEEPALIVE_INTERVAL_SECONDS (7 days).
-        try:
-            SolarEdgeAPI('/app/config.json')._maybe_keepalive_refresh()
-        except Exception as e:
-            logger.warning('SolarEdge keepalive check failed: %s', e)
 
         # --- NEW: Early exit if night management is disabled ---
         if not getattr(config, 'enable_night_management', True):
@@ -356,9 +370,26 @@ def run_charging_automation():
     # trigger an overnight token refresh while night management is active.
     solaredge = SolarEdgeAPI('/app/config.json')
 
-    # 1. Check Power Flow before polling vehicle sensors
+    # 1. Check Power Flow before polling vehicle sensors.
+    # Prefer HA PV (Modbus-backed Emporia inverter sensors); fall back to the
+    # SolarEdge API if HA PV is unavailable.
+    pv_override = None
+    pv_source = 'solaredge'
+    if pv_provider is not None:
+        try:
+            ha_pv = pv_provider()
+        except Exception as e:
+            logger.warning('HA PV provider failed: %s', e)
+            ha_pv = None
+        if ha_pv is not None:
+            pv_override = ha_pv
+            pv_source = 'homeassistant'
+    logger.info('PV source: %s', pv_source)
+
     try:
-        power_flow = solaredge.get_current_power_flow(load_provider=load_provider)
+        power_flow = solaredge.get_current_power_flow(
+            load_provider=load_provider, pv_override=pv_override,
+        )
     except LoadUnavailableError:
         logger.error('Emporia load unavailable; aborting cycle for safety')
         return CycleResult.IDLE

@@ -17,6 +17,8 @@ class Config:
         self.emporia_load_entities = []
         self.emporia_rivian_entity = None
         self.emporia_tesla_entity = None
+        self.emporia_pv_lead_entity = None
+        self.emporia_pv_follower_entity = None
         self.night_time_start = None
         self.night_time_end = None
 
@@ -33,6 +35,8 @@ class Config:
             self.emporia_load_entities = data.get('emporia-load-entities', [])
             self.emporia_rivian_entity = data.get('emporia-rivian-entity')
             self.emporia_tesla_entity = data.get('emporia-tesla-entity')
+            self.emporia_pv_lead_entity = data.get('emporia-pv-lead-entity')
+            self.emporia_pv_follower_entity = data.get('emporia-pv-follower-entity')
             self.night_time_start = data['night-time-start']
             self.night_time_end = data['night-time-end']
 
