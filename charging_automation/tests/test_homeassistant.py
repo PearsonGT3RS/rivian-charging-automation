@@ -184,3 +184,25 @@ class TestHomeAssistantLive(unittest.TestCase):
             self.assertIsNotNone(value, f'{entity} unavailable')
             self.assertGreaterEqual(value, 0.0)
             print(f'[LIVE] {entity} = {value:.0f} W')
+
+    def test_live_pv_sensors(self):
+        """Read the two PV inverter sensors if configured. Skips if absent."""
+        with open('/app/config.json') as f:
+            cfg = json.load(f)
+        ha = HomeAssistantAPI(cfg['homeassistant-url'], cfg['homeassistant-token'])
+
+        lead_entity = cfg.get('emporia-pv-lead-entity')
+        follower_entity = cfg.get('emporia-pv-follower-entity')
+        if not lead_entity or not follower_entity:
+            print('\n[LIVE] PV sensors not configured; skipping')
+            return
+
+        lead = ha.get_sensor_value(lead_entity)
+        follower = ha.get_sensor_value(follower_entity)
+        self.assertIsNotNone(lead, f'{lead_entity} unavailable')
+        self.assertIsNotNone(follower, f'{follower_entity} unavailable')
+        self.assertGreaterEqual(lead, 0.0)
+        self.assertGreaterEqual(follower, 0.0)
+        print(f'\n[LIVE] {lead_entity} = {lead:.0f} W')
+        print(f'[LIVE] {follower_entity} = {follower:.0f} W')
+        print(f'[LIVE] PV total = {lead + follower:.0f} W')
