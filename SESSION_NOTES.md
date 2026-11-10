@@ -1,6 +1,6 @@
 # Charging Automation — Session Notes
 
-Last updated: 2026-11-09 (session 3, continued)
+Last updated: 2026-11-10 (session 4)
 Repo: charging_automation (SolarEdge v2 migration)
 Branch: solaredge-v2 (PR pending to main/master)
 
@@ -40,13 +40,23 @@ Assistant so we can compute grid flow (grid = load - pv).
 
 - SolarEdgeAPI.py — v2 OAuth flow, token rotation, 401 retry, PowerFlow
   interface preserved. LoadUnavailableError raised when load_provider
-  returns None.
+  returns None. `get_current_power_flow()` accepts an optional
+  `pv_override` so callers can supply PV from an alternate source (HA)
+  while still reusing the PowerFlow construction and logging.
+  `KEEPALIVE_INTERVAL_SECONDS` is now 6 days (was 7).
 - HomeAssistantAPI.py — Emporia load source; returns None on
   unavailable/unknown/non-numeric/HTTP error so LoadUnavailableError fires.
 - ChargingAutomation.py — wires load_provider from HA + emporia_load_entities,
-  catches LoadUnavailableError, uses power_flow.grid.
+  catches LoadUnavailableError, uses power_flow.grid. Prefers HA PV
+  (lead + follower inverter sensors) with SolarEdge API fallback. Runs
+  the SolarEdge keepalive refresh unconditionally at the top of every
+  cycle (day and night). `validate_emporia_config()` warns at startup if
+  a per-EV entity is configured but not aggregated into
+  emporia-load-entities.
 - Config.py — exposes solaredge_client_id/secret/site_id/redirect_uri,
-  homeassistant_url/token, emporia_load_entities, night_time_start/end.
+  homeassistant_url/token, emporia_load_entities, emporia_rivian_entity,
+  emporia_tesla_entity, emporia_pv_lead_entity, emporia_pv_follower_entity,
+  night_time_start/end.
 - main.py — dispatches on CycleResult enum (NIGHT_ACTIVE → 5 min,
   DAYTIME_ACTIVE → 15 min, IDLE → 30 min).
 - config-example.json — updated to v2 schema (client-id/secret/redirect-uri,
@@ -142,6 +152,21 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
 - f471080 — fix: handle null values in SolarEdge current power samples
   (walk backwards to newest non-null sample; return None if all null)
 
+### Session 4 commits (HA PV preference + keepalive)
+
+- cd71187 — feat: add Emporia config validation warning and daytime cycle
+  tests (`validate_emporia_config()` warns when a per-EV entity is set but
+  not in `emporia-load-entities`; `TestValidateEmporiaConfig`,
+  `TestRunChargingAutomationDaytimeCycle`, and a `LoadUnavailableError`
+  early-exit test added)
+- c00e0bf — feat: prefer HA PV sensors with SolarEdge fallback and 6-day
+  keepalive (new `emporia-pv-lead-entity` / `emporia-pv-follower-entity`
+  config keys; `pv_provider` sums the two inverter sensors; SolarEdge
+  `get_current_power_flow()` gains `pv_override`; keepalive moved out of
+  the night branch and runs on every cycle; `KEEPALIVE_INTERVAL_SECONDS`
+  reduced from 7 to 6 days; `TestPvSourceSelection` and
+  `TestKeepaliveAlwaysRuns` added)
+
 ### Session 3 commits (EV draw / solar allocation fix)
 
 - f9eebbf — fix: use commanded amps for EV draw in solar allocation
@@ -169,6 +194,36 @@ Tesla / Rivian live tests — added but not yet run. Both are read-only
   (test_charging_automation.py: TestRunChargingAutomationEvDraw,
   TestConfigEmporiaEntities; test_homeassistant.py: per-EV sensor unit
   tests + live per-EV sensor test)
+
+## PV source selection (as of session 4, commit c00e0bf)
+
+`run_charging_automation()` prefers Home Assistant PV sensors and falls
+back to the SolarEdge API:
+
+1. If `emporia-pv-lead-entity` and `emporia-pv-follower-entity` are both
+   configured, `pv_provider()` reads both sensors and returns their sum.
+   If either sensor is unavailable (`None`), `pv_provider()` returns
+   `None`.
+2. If `pv_provider()` returns a value, it is passed to
+   `SolarEdgeAPI.get_current_power_flow(pv_override=...)` and the
+   SolarEdge `/power` endpoint is not called.
+3. Otherwise `pv_override=None` and `get_current_power_flow()` falls back
+   to `get_current_power()` (SolarEdge v2 `/power`).
+4. The chosen source is logged each cycle as `PV source: homeassistant`
+   or `PV source: solaredge`.
+
+The two inverter sensors are Modbus-backed Emporia sensors exposed via
+Home Assistant. They must be summed because the site has two inverters
+(lead + follower).
+
+## SolarEdge token keepalive (as of session 4, commit c00e0bf)
+
+SolarEdge v2 invalidates refresh tokens after 14 days of non-use. To
+avoid the full OAuth dance, `run_charging_automation()` calls
+`SolarEdgeAPI._maybe_keepalive_refresh()` at the top of **every** cycle
+(day and night), regardless of whether HA PV is the primary source. The
+refresh fires at most once per `KEEPALIVE_INTERVAL_SECONDS` (6 days),
+leaving an 8-day margin before the 14-day expiry.
 
 ## Solar allocation logic (as of session 3, commit 2351063)
 
@@ -259,6 +314,14 @@ in production:
 
 ## Known gaps / follow-ups
 
+0. Local test environment: `python3 -m unittest tests.test_charging_automation`
+   fails with `ModuleNotFoundError: No module named 'requests'` unless
+   dependencies are installed first:
+       pip3 install -r charging_automation/requirements.txt
+   (The tests themselves only use stdlib `unittest`/`mock`, but importing
+   `ChargingAutomation` pulls in `HomeAssistantAPI`, which imports
+   `requests`.)
+
 1. docker-compose.yml in the repo does NOT mount /sessions or /app/config.json.
    Production compose is different and already has a proper sessions mount —
    do not edit the repo copy without confirming with the user.
@@ -301,7 +364,12 @@ in production:
 1. Commit the Dockerfile rewrite (currently uncommitted on solaredge-v2):
        git add Dockerfile
        git commit -m "build: rewrite Dockerfile for slim-bookworm, non-root user, and /sessions mount"
-2. Push solaredge-v2 and open the PR (see pr-body.md):
+2. Update `config-example.json` with the two new PV keys
+   (`emporia-pv-lead-entity`, `emporia-pv-follower-entity`) — see
+   Known gaps #11.
+3. Add a live HA PV test (gated by `HA_LIVE=1`) that reads both inverter
+   sensors — see Known gaps #10.
+4. Push solaredge-v2 and open the PR (see pr-body.md):
        git push -u origin solaredge-v2
        gh pr create --base main --head solaredge-v2 \
          --title "Migrate to SolarEdge v2 OAuth + Emporia load via Home Assistant" \
@@ -331,19 +399,32 @@ in production:
      (confirmed for the current deployment: the top-level load sensors
      already include the EV circuits). If they are not, `load` under-reports
      and `grid` is wrong regardless of the EV-draw logic.
-   - Consider adding a startup validation that warns if
-     `emporia-rivian-entity` / `emporia-tesla-entity` are set but not
-     present in `emporia-load-entities`.
-9. New tests added (pending commit):
+   - Startup validation added in cd71187 (`validate_emporia_config()`).
+9. New tests added (committed in cd71187 and c00e0bf):
    - `test_charging_automation.py::TestRunChargingAutomationEvDraw` —
      verifies `solar_for_ev = rivian_draw + tesla_draw + available_power`
      across: both EVs drawing, no draw, grid import, missing sensor,
      `None` sensor value, negative sensor value, disconnected vehicle.
    - `test_charging_automation.py::TestConfigEmporiaEntities` — verifies
      `Config` loads the two new keys and defaults them to `None`.
+   - `test_charging_automation.py::TestValidateEmporiaConfig` — verifies
+     the startup warning for per-EV entities missing from
+     `emporia-load-entities`.
+   - `test_charging_automation.py::TestRunChargingAutomationDaytimeCycle`
+     — end-to-end daytime cycle with all APIs mocked.
+   - `test_charging_automation.py::TestPvSourceSelection` — verifies HA
+     PV is preferred and SolarEdge is used as fallback.
+   - `test_charging_automation.py::TestKeepaliveAlwaysRuns` — verifies
+     the keepalive refresh runs on every cycle (day and night).
    - `test_homeassistant.py` — per-EV sensor unit tests (Rivian, Tesla,
      idle=0W, unavailable=None) and a live per-EV sensor test gated by
      `HA_LIVE=1`.
+10. HA PV sensors (`emporia-pv-lead-entity`, `emporia-pv-follower-entity`)
+    are new in c00e0bf and have not yet been exercised against the live
+    Home Assistant instance. Add a live test (gated by `HA_LIVE=1`) that
+    reads both sensors and asserts they are numeric and non-negative.
+11. `config-example.json` has not yet been updated with the two new PV
+    keys (`emporia-pv-lead-entity`, `emporia-pv-follower-entity`).
 
 ## Conventions
 
