@@ -97,10 +97,17 @@ Observed output:
     [LIVE] sensor.left_side_connection_power_minute_average = 486 W
     [LIVE] Emporia total load = 1399 W
 
-Tesla / Rivian live tests — added but not yet run. Both are read-only
+Tesla / Rivian live tests — PASSED 2026-11-10. Both are read-only
 (no wake, no charge start/stop, no amp changes). Run with:
     TESLA_LIVE=1 python -m unittest tests.test_tesla.TestTeslaLive -v
     RIVIAN_LIVE=1 python -m unittest tests.test_rivian.TestRivianLive -v
+
+HA PV live test — PASSED 2026-11-10. `test_live_pv_sensors` read both
+inverter sensors and printed a non-zero PV total during daylight.
+
+Full live suite — PASSED 2026-11-10:
+    cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 TESLA_LIVE=1 RIVIAN_LIVE=1 \
+      python -m unittest discover -s tests -v
 
 ## Commits this session
 
@@ -347,9 +354,9 @@ in production:
    ownership (or the container will fail to read config/token files).
 2. SolarEdge-only live test PASSED 2026-11-06 (pv=2633W load=8644W grid=6011W).
    HA-only live test PASSED 2026-11-06 (Emporia total load = 1399W).
-   Tesla / Rivian live tests added but not yet run:
-       TESLA_LIVE=1 python -m unittest tests.test_tesla.TestTeslaLive -v
-       RIVIAN_LIVE=1 python -m unittest tests.test_rivian.TestRivianLive -v
+   Tesla / Rivian live tests PASSED 2026-11-10.
+   HA PV live test PASSED 2026-11-10.
+   Full live suite PASSED 2026-11-10.
 3. Dead code / minor cleanups — DONE in 7c575b6. Notes:
    - RivianAPI.set_schedule_custom: the dead initial `"amperage": self.AMPS_MAX`
      was already gone in the current file; both branches set it explicitly.
@@ -369,9 +376,9 @@ in production:
 6. SECURITY: se.sh (OAuth bootstrap curl with client_secret + authorization
    code) was added to .gitignore in 79afadf. The file was never committed
    (git log --all -- se.sh is empty), so no history rewrite is needed.
-   The client_secret and authorization code in that file should still be
-   treated as compromised — rotate the SolarEdge client secret in the admin
-   console and re-run the OAuth bootstrap.
+   RESOLVED 2026-11-08: the SolarEdge client secret was rotated in the admin
+   console and the OAuth bootstrap was re-run to regenerate
+   /sessions/solaredge-token.json.
 7. Git push to origin failed with "Password authentication is not supported
    for Git operations." Use a PAT (HTTPS) or SSH key, or `gh auth login`.
    See PR body in pr-body.md.
@@ -388,20 +395,9 @@ in production:
          --body-file pr-body.md
    (If push fails with "Password authentication is not supported", configure
    a PAT or SSH key first — see Known gaps #7.)
-3. Rotate the SolarEdge client secret (see Known gaps #6) and re-run the
-   OAuth bootstrap to regenerate /sessions/solaredge-token.json.
-4. Run the full live suite (HA + SolarEdge):
-       cd charging_automation && HA_LIVE=1 SOLAREDGE_LIVE=1 python -m unittest discover -s tests -v
-5. Confirm the Tesla unit tests actually run in an environment where
+3. Confirm the Tesla unit tests actually run in an environment where
    tesla-fleet-api / cryptography are installed (currently skipped locally).
-6. Run the Tesla and Rivian live tests (read-only) to confirm connectivity:
-       TESLA_LIVE=1 python -m unittest tests.test_tesla.TestTeslaLive -v
-       RIVIAN_LIVE=1 python -m unittest tests.test_rivian.TestRivianLive -v
-7. Run the live HA PV test against the real Home Assistant instance:
-       cd charging_automation && HA_LIVE=1 python -m unittest tests.test_homeassistant.TestHomeAssistantLive -v
-   Confirm `test_live_pv_sensors` prints both inverter readings and a
-   non-zero PV total during daylight.
-8. Verify the HA PV preference in production: confirm the log line
+4. Verify the HA PV preference in production: confirm the log line
    `PV source: homeassistant` appears during daylight cycles and that
    `pv` matches the sum of the two inverter sensors.
    - `test_charging_automation.py::TestPvSourceSelection` — verifies HA
