@@ -284,57 +284,97 @@ class RivianAPI:
         else:
             logger.error('Failed to make GraphQL request: {}'.format(response.text))
 
+    # Candidate mutations for stopping an in-progress charging session.
+    # The Rivian API is undocumented and the exact mutation name/endpoint has
+    # changed over time, so we try each candidate in order and log the result.
+    # Once we know which one the API accepts, the rest can be removed.
+    _STOP_CANDIDATES = (
+        # (endpoint, operationName, query, variables)
+        (
+            'CHARGING_URL',
+            'SetChargingSession',
+            "mutation SetChargingSession($vehicleId: String!) { "
+            "setChargingSession(vehicleId: $vehicleId, "
+            "chargingSession: { enabled: false }) { success } }",
+            lambda vid: {"vehicleId": vid},
+        ),
+        (
+            'GATEWAY_URL',
+            'SetVehicleCharging',
+            "mutation SetVehicleCharging($vehicleId: String!, $enabled: Boolean!) { "
+            "setVehicleCharging(vehicleId: $vehicleId, enabled: $enabled) { success } }",
+            lambda vid: {"vehicleId": vid, "enabled": False},
+        ),
+        (
+            'GATEWAY_URL',
+            'StopCharging',
+            "mutation StopCharging($vehicleId: String!) { "
+            "stopCharging(vehicleId: $vehicleId) { success } }",
+            lambda vid: {"vehicleId": vid},
+        ),
+        (
+            'CHARGING_URL',
+            'StopCharging',
+            "mutation StopCharging($vehicleId: String!) { "
+            "stopCharging(vehicleId: $vehicleId) { success } }",
+            lambda vid: {"vehicleId": vid},
+        ),
+    )
+
     def charge_stop(self):
         """Stop an in-progress Rivian charging session.
 
         The charging schedule only governs *future* scheduled charging; it does
         NOT terminate a session that is already running (setting amperage=0 on
-        the schedule leaves the car drawing full power). To stop an active
-        session we call the setChargingSession mutation on the charging
-        endpoint (CHARGING_URL), using an inline input object so we don't have
-        to know the input type's name. We also force the schedule off so the
-        car doesn't restart on its own.
+        the schedule leaves the car drawing full power). The Rivian API is
+        undocumented, so we try a list of candidate stop mutations and log the
+        response for each. We also force the schedule off so the car doesn't
+        restart on its own.
         """
         logger.info('Stopping Rivian charging session (vehicle_id=%s)', self.vehicle_id)
 
-        request = {
-            "operationName": "SetChargingSession",
-            "variables": {"vehicleId": self.vehicle_id},
-            "query": (
-                "mutation SetChargingSession($vehicleId: String!) { "
-                "setChargingSession(vehicleId: $vehicleId, "
-                "chargingSession: { enabled: false }) { success } }"
-            ),
-        }
         headers = {
             'a-sess': self.app_session_token,
             'u-sess': self.user_session_token,
             'csrf-token': self.csrf_token,
             'apollographql-client-name': 'com.rivian.android.consumer'
         }
-        stopped = False
-        try:
-            response = requests.post(self.CHARGING_URL, headers=headers, json=request)
-        except requests.RequestException as e:
-            logger.error('Failed to stop Rivian charging session: %s', e)
-            response = None
 
-        if response is not None:
-            logger.info('setChargingSession response: status=%s body=%s',
-                        response.status_code, response.text)
-            if response.status_code == 200:
-                try:
-                    payload = response.json()
-                except ValueError:
-                    payload = {}
-                errors = payload.get('errors')
-                if errors:
-                    logger.error('Rivian rejected SetChargingSession: %s', errors)
-                else:
-                    logger.info('Rivian charging session stopped')
-                    stopped = True
-            else:
-                logger.error('Failed to stop Rivian charging session: %s', response.text)
+        stopped = False
+        for endpoint_attr, op_name, query, vars_fn in self._STOP_CANDIDATES:
+            url = getattr(self, endpoint_attr)
+            request = {
+                "operationName": op_name,
+                "variables": vars_fn(self.vehicle_id),
+                "query": query,
+            }
+            try:
+                response = requests.post(url, headers=headers, json=request)
+            except requests.RequestException as e:
+                logger.warning('Stop candidate %s@%s failed: %s',
+                               op_name, endpoint_attr, e)
+                continue
+
+            logger.info('Stop candidate %s@%s: status=%s body=%s',
+                        op_name, endpoint_attr, response.status_code, response.text)
+
+            if response.status_code != 200:
+                continue
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
+            if payload.get('errors'):
+                continue
+            # No GraphQL errors -> the mutation was accepted.
+            logger.info('Rivian charging session stopped via %s@%s',
+                        op_name, endpoint_attr)
+            stopped = True
+            break
+
+        if not stopped:
+            logger.error('All Rivian stop-charging candidates were rejected; '
+                         'capture the app traffic to find the correct mutation.')
 
         # Also disable the schedule so the car doesn't restart on its own.
         self.set_schedule_off(force=True)
