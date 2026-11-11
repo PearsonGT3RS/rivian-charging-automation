@@ -236,8 +236,7 @@ class TestRivianUnit(unittest.TestCase):
     # -------------------------------------------------------- charge_stop
 
     @mock.patch('RivianAPI.requests.post')
-    def test_charge_stop_tries_candidates_until_one_succeeds(self, mock_post):
-        # First candidate rejected (GraphQL errors), second accepted.
+    def test_charge_stop_introspects_and_forces_schedule_off(self, mock_post):
         existing = {
             'startTime': 0,
             'duration': 1440,
@@ -248,10 +247,15 @@ class TestRivianUnit(unittest.TestCase):
             'amperage': 0,
         }
         mock_post.side_effect = [
-            # candidate 1: rejected
-            _Resp(400, {'errors': [{'message': 'Cannot query field'}]}),
-            # candidate 2: accepted
-            _Resp(200, {'data': {'setVehicleCharging': {'success': True}}}),
+            # introspection GATEWAY_URL
+            _Resp(200, {'data': {'__schema': {'mutationType': {'fields': [
+                {'name': 'setChargingSchedules', 'args': []},
+                {'name': 'lockVehicle', 'args': []},
+            ]}}}}),
+            # introspection CHARGING_URL
+            _Resp(200, {'data': {'__schema': {'mutationType': {'fields': [
+                {'name': 'startChargingSession', 'args': []},
+            ]}}}}),
             # getVehicle (schedule fetch)
             _Resp(200, {'data': {'getVehicle': {
                 'chargingSchedules': [existing],
@@ -260,16 +264,11 @@ class TestRivianUnit(unittest.TestCase):
             _Resp(200, {'data': {'setChargingSchedules': {'success': True}}}),
         ]
         self.api.vehicle_id = 'veh-1'
-        self.assertTrue(self.api.charge_stop())
+        self.assertFalse(self.api.charge_stop())
 
-        # Candidate 1 hit the charging endpoint; candidate 2 hit the gateway.
-        first = mock_post.call_args_list[0]
-        self.assertEqual(first.args[0], RivianAPI.CHARGING_URL)
-        self.assertEqual(first.kwargs['json']['operationName'], 'SetChargingSession')
-
-        second = mock_post.call_args_list[1]
-        self.assertEqual(second.args[0], RivianAPI.GATEWAY_URL)
-        self.assertEqual(second.kwargs['json']['operationName'], 'SetVehicleCharging')
+        # First two calls are introspection queries.
+        self.assertIn('__schema', mock_post.call_args_list[0].kwargs['json']['query'])
+        self.assertIn('__schema', mock_post.call_args_list[1].kwargs['json']['query'])
 
         # Last call: forced schedule-off on the gateway.
         last = mock_post.call_args_list[-1]
@@ -278,31 +277,6 @@ class TestRivianUnit(unittest.TestCase):
         schedule = last.kwargs['json']['variables']['chargingSchedules'][0]
         self.assertTrue(schedule['enabled'])
         self.assertEqual(schedule['amperage'], 0)
-
-    @mock.patch('RivianAPI.requests.post')
-    def test_charge_stop_all_candidates_rejected_returns_false(self, mock_post):
-        existing = {
-            'startTime': 0,
-            'duration': 1440,
-            'location': {},
-            'enabled': True,
-            'weekDays': ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
-                         'Friday', 'Saturday', 'Sunday'],
-            'amperage': 0,
-        }
-        # Every candidate rejected, then schedule fetch + forced update.
-        mock_post.side_effect = [
-            _Resp(400, {'errors': [{'message': 'nope'}]}),
-            _Resp(400, {'errors': [{'message': 'nope'}]}),
-            _Resp(400, {'errors': [{'message': 'nope'}]}),
-            _Resp(400, {'errors': [{'message': 'nope'}]}),
-            _Resp(200, {'data': {'getVehicle': {
-                'chargingSchedules': [existing],
-            }}}),
-            _Resp(200, {'data': {'setChargingSchedules': {'success': True}}}),
-        ]
-        self.api.vehicle_id = 'veh-1'
-        self.assertFalse(self.api.charge_stop())
 
     @mock.patch('RivianAPI.requests.post')
     def test_charge_stop_http_error_does_not_raise(self, mock_post):
