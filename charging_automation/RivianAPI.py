@@ -278,3 +278,29 @@ class RivianAPI:
             logger.info('Charging schedule updated')
         else:
             logger.error('Failed to make GraphQL request: {}'.format(response.text))
+
+    def charge_stop(self):
+        """End the current Rivian charging session without changing its schedule."""
+        request = {
+            "operationName": "EndChargingSession",
+            "variables": {"vehicleId": self.vehicle_id},
+            "query": "mutation EndChargingSession($vehicleId: String!) { endChargingSession(vehicleId: $vehicleId) { success } }"
+        }
+        headers = {
+            'a-sess': self.app_session_token,
+            'u-sess': self.user_session_token,
+            'csrf-token': self.csrf_token,
+            'apollographql-client-name': 'com.rivian.android.consumer'
+        }
+        try:
+            response = requests.post(self.CHARGING_URL, headers=headers, json=request)
+        except requests.RequestException as e:
+            logger.error('Failed to stop Rivian charging session: %s', e)
+            return False
+
+        if response.status_code != 200:
+            logger.error('Failed to stop Rivian charging session: %s', response.text)
+            return False
+
+        logger.info('Rivian charging session stopped')
+        return True
