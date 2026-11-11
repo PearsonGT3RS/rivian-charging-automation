@@ -287,12 +287,55 @@ class RivianAPI:
     def charge_stop(self):
         """Stop an in-progress Rivian charging session.
 
-        The Rivian API has no dedicated start/stop mutation. The app controls
-        charging via the schedule: setting amperage=0 (with the schedule still
-        enabled) commands the vehicle to draw 0A and terminates an active
-        session. Disabling the schedule alone does NOT stop a running session.
-        We force the update so it is sent even if the schedule already matches.
+        The charging schedule only governs *future* scheduled charging; it does
+        NOT terminate a session that is already running (setting amperage=0 on
+        the schedule leaves the car drawing full power). To stop an active
+        session we call the setChargingSession mutation on the charging
+        endpoint (CHARGING_URL), using an inline input object so we don't have
+        to know the input type's name. We also force the schedule off so the
+        car doesn't restart on its own.
         """
         logger.info('Stopping Rivian charging session (vehicle_id=%s)', self.vehicle_id)
+
+        request = {
+            "operationName": "SetChargingSession",
+            "variables": {"vehicleId": self.vehicle_id},
+            "query": (
+                "mutation SetChargingSession($vehicleId: String!) { "
+                "setChargingSession(vehicleId: $vehicleId, "
+                "chargingSession: { enabled: false }) { success } }"
+            ),
+        }
+        headers = {
+            'a-sess': self.app_session_token,
+            'u-sess': self.user_session_token,
+            'csrf-token': self.csrf_token,
+            'apollographql-client-name': 'com.rivian.android.consumer'
+        }
+        stopped = False
+        try:
+            response = requests.post(self.CHARGING_URL, headers=headers, json=request)
+        except requests.RequestException as e:
+            logger.error('Failed to stop Rivian charging session: %s', e)
+            response = None
+
+        if response is not None:
+            logger.info('setChargingSession response: status=%s body=%s',
+                        response.status_code, response.text)
+            if response.status_code == 200:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                errors = payload.get('errors')
+                if errors:
+                    logger.error('Rivian rejected SetChargingSession: %s', errors)
+                else:
+                    logger.info('Rivian charging session stopped')
+                    stopped = True
+            else:
+                logger.error('Failed to stop Rivian charging session: %s', response.text)
+
+        # Also disable the schedule so the car doesn't restart on its own.
         self.set_schedule_off(force=True)
-        return True
+        return stopped
