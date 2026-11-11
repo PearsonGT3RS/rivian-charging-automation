@@ -184,7 +184,10 @@ def apply_charging(vehicle, target_watts, increment, vehicle_name, current_sched
             if vehicle_name == "Tesla":
                 vehicle.charge_stop() # Use Signed Stop for Highland
             else:
-                vehicle.set_schedule_off() # Use Schedule Off for Rivian to avoid wake-up
+                # Disabling the schedule alone does NOT stop an in-progress
+                # session on the Rivian; we must explicitly end the session.
+                vehicle.charge_stop()
+                vehicle.set_schedule_off() # Also disable schedule so it doesn't restart
         return
 
     # 2. START/UPDATE LOGIC: Above minimum

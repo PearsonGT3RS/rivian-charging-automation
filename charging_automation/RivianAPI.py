@@ -281,6 +281,7 @@ class RivianAPI:
 
     def charge_stop(self):
         """End the current Rivian charging session without changing its schedule."""
+        logger.info('Stopping Rivian charging session (vehicle_id=%s)', self.vehicle_id)
         request = {
             "operationName": "EndChargingSession",
             "variables": {"vehicleId": self.vehicle_id},
@@ -293,13 +294,23 @@ class RivianAPI:
             'apollographql-client-name': 'com.rivian.android.consumer'
         }
         try:
-            response = requests.post(self.CHARGING_URL, headers=headers, json=request)
+            response = requests.post(self.GATEWAY_URL, headers=headers, json=request)
         except requests.RequestException as e:
             logger.error('Failed to stop Rivian charging session: %s', e)
             return False
 
         if response.status_code != 200:
             logger.error('Failed to stop Rivian charging session: %s', response.text)
+            return False
+
+        # Surface GraphQL-level errors (HTTP 200 but operation rejected).
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        errors = payload.get('errors')
+        if errors:
+            logger.error('Rivian rejected EndChargingSession: %s', errors)
             return False
 
         logger.info('Rivian charging session stopped')
