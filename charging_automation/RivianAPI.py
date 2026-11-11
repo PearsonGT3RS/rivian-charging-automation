@@ -280,12 +280,20 @@ class RivianAPI:
             logger.error('Failed to make GraphQL request: {}'.format(response.text))
 
     def charge_stop(self):
-        """End the current Rivian charging session without changing its schedule."""
+        """End the current Rivian charging session without changing its schedule.
+
+        Uses the charging endpoint's setChargingSession mutation (the same one
+        the Rivian app uses to start/stop a session). Disabling the schedule
+        alone does NOT stop an in-progress session.
+        """
         logger.info('Stopping Rivian charging session (vehicle_id=%s)', self.vehicle_id)
         request = {
-            "operationName": "EndChargingSession",
-            "variables": {"vehicleId": self.vehicle_id},
-            "query": "mutation EndChargingSession($vehicleId: String!) { endChargingSession(vehicleId: $vehicleId) { success } }"
+            "operationName": "SetChargingSession",
+            "variables": {
+                "vehicleId": self.vehicle_id,
+                "chargingSession": {"enabled": False},
+            },
+            "query": "mutation SetChargingSession($vehicleId: String!, $chargingSession: ChargingSessionInput!) { setChargingSession(vehicleId: $vehicleId, chargingSession: $chargingSession) { success } }"
         }
         headers = {
             'a-sess': self.app_session_token,
@@ -294,7 +302,7 @@ class RivianAPI:
             'apollographql-client-name': 'com.rivian.android.consumer'
         }
         try:
-            response = requests.post(self.GATEWAY_URL, headers=headers, json=request)
+            response = requests.post(self.CHARGING_URL, headers=headers, json=request)
         except requests.RequestException as e:
             logger.error('Failed to stop Rivian charging session: %s', e)
             return False
@@ -310,7 +318,7 @@ class RivianAPI:
             payload = {}
         errors = payload.get('errors')
         if errors:
-            logger.error('Rivian rejected EndChargingSession: %s', errors)
+            logger.error('Rivian rejected SetChargingSession: %s', errors)
             return False
 
         logger.info('Rivian charging session stopped')

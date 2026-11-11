@@ -234,16 +234,21 @@ class TestRivianUnit(unittest.TestCase):
     # -------------------------------------------------------- charge_stop
 
     @mock.patch('RivianAPI.requests.post')
-    def test_charge_stop_sends_end_session_mutation(self, mock_post):
-        mock_post.return_value = _Resp(200, {'data': {'endChargingSession': {
+    def test_charge_stop_sends_set_charging_session_mutation(self, mock_post):
+        mock_post.return_value = _Resp(200, {'data': {'setChargingSession': {
             'success': True,
         }}})
         self.api.vehicle_id = 'veh-1'
         self.api.charge_stop()
         mock_post.assert_called_once()
         body = mock_post.call_args.kwargs['json']
-        self.assertEqual(body['operationName'], 'EndChargingSession')
-        self.assertEqual(body['variables'], {'vehicleId': 'veh-1'})
+        self.assertEqual(body['operationName'], 'SetChargingSession')
+        self.assertEqual(body['variables'], {
+            'vehicleId': 'veh-1',
+            'chargingSession': {'enabled': False},
+        })
+        # Must hit the charging endpoint, not the gateway.
+        self.assertEqual(mock_post.call_args.args[0], RivianAPI.CHARGING_URL)
 
     @mock.patch('RivianAPI.requests.post')
     def test_charge_stop_http_error_does_not_raise(self, mock_post):
