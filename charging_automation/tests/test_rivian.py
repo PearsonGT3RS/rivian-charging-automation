@@ -231,6 +231,27 @@ class TestRivianUnit(unittest.TestCase):
         # Should not raise.
         self.api.set_charging_schedule({'amperage': 16, 'enabled': True})
 
+    # -------------------------------------------------------- charge_stop
+
+    @mock.patch('RivianAPI.requests.post')
+    def test_charge_stop_sends_end_session_mutation(self, mock_post):
+        mock_post.return_value = _Resp(200, {'data': {'endChargingSession': {
+            'success': True,
+        }}})
+        self.api.vehicle_id = 'veh-1'
+        self.api.charge_stop()
+        mock_post.assert_called_once()
+        body = mock_post.call_args.kwargs['json']
+        self.assertEqual(body['operationName'], 'EndChargingSession')
+        self.assertEqual(body['variables'], {'vehicleId': 'veh-1'})
+
+    @mock.patch('RivianAPI.requests.post')
+    def test_charge_stop_http_error_does_not_raise(self, mock_post):
+        mock_post.return_value = _Resp(500, {}, text='boom')
+        self.api.vehicle_id = 'veh-1'
+        # Should not raise.
+        self.api.charge_stop()
+
 
 @unittest.skipUnless(os.environ.get('RIVIAN_LIVE') == '1',
                      'Set RIVIAN_LIVE=1 to run live Rivian connectivity test')
