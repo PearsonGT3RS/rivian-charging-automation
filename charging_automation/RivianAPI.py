@@ -214,7 +214,7 @@ class RivianAPI:
             return 0
         return schedules[0].get('amperage', 0)
 
-    def set_schedule_custom(self, amps=AMPS_MAX, current_schedules=None):
+    def set_schedule_custom(self, amps=AMPS_MAX, current_schedules=None, force=False):
         new_schedule = {
                 "startTime": 0,
                 "duration": 1440, # 24-hour window
@@ -240,8 +240,10 @@ class RivianAPI:
 
         logger.info('Schedule to be set: {}'.format(new_schedule))
 
-        # Don't make unnecessary updates
-        if current_schedules and len(current_schedules) > 0 and new_schedule == current_schedules[0]:
+        # Don't make unnecessary updates — unless forced. A forced update is
+        # required to actually stop an in-progress session: if the schedule is
+        # already disabled, skipping the mutation leaves the car charging.
+        if not force and current_schedules and len(current_schedules) > 0 and new_schedule == current_schedules[0]:
             logger.info('No change to the charging schedule. Not updating')
             return
 
@@ -250,8 +252,8 @@ class RivianAPI:
     def set_schedule_default(self):
         self.set_schedule_custom()
 
-    def set_schedule_off(self):
-        self.set_schedule_custom(amps=0)
+    def set_schedule_off(self, force=False):
+        self.set_schedule_custom(amps=0, force=force)
 
     def set_schedule_amps(self, amps, current_schedules=None):
         self.set_schedule_custom(amps=amps, current_schedules=current_schedules)
@@ -280,46 +282,15 @@ class RivianAPI:
             logger.error('Failed to make GraphQL request: {}'.format(response.text))
 
     def charge_stop(self):
-        """End the current Rivian charging session without changing its schedule.
+        """Stop an in-progress Rivian charging session.
 
-        Uses the charging endpoint's setChargingSession mutation (the same one
-        the Rivian app uses to start/stop a session). Disabling the schedule
-        alone does NOT stop an in-progress session.
+        The Rivian API has no dedicated start/stop mutation; the app controls
+        charging via the charging schedule. Disabling the schedule normally
+        stops the session, but set_schedule_custom() skips the mutation when
+        the schedule already matches — which leaves an in-progress session
+        running. We therefore force the update so the vehicle receives the
+        enabled=false command and terminates the session.
         """
         logger.info('Stopping Rivian charging session (vehicle_id=%s)', self.vehicle_id)
-        request = {
-            "operationName": "SetChargingSession",
-            "variables": {
-                "vehicleId": self.vehicle_id,
-                "chargingSession": {"enabled": False},
-            },
-            "query": "mutation SetChargingSession($vehicleId: String!, $chargingSession: ChargingSessionInput!) { setChargingSession(vehicleId: $vehicleId, chargingSession: $chargingSession) { success } }"
-        }
-        headers = {
-            'a-sess': self.app_session_token,
-            'u-sess': self.user_session_token,
-            'csrf-token': self.csrf_token,
-            'apollographql-client-name': 'com.rivian.android.consumer'
-        }
-        try:
-            response = requests.post(self.CHARGING_URL, headers=headers, json=request)
-        except requests.RequestException as e:
-            logger.error('Failed to stop Rivian charging session: %s', e)
-            return False
-
-        if response.status_code != 200:
-            logger.error('Failed to stop Rivian charging session: %s', response.text)
-            return False
-
-        # Surface GraphQL-level errors (HTTP 200 but operation rejected).
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = {}
-        errors = payload.get('errors')
-        if errors:
-            logger.error('Rivian rejected SetChargingSession: %s', errors)
-            return False
-
-        logger.info('Rivian charging session stopped')
+        self.set_schedule_off(force=True)
         return True

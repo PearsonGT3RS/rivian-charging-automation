@@ -234,21 +234,31 @@ class TestRivianUnit(unittest.TestCase):
     # -------------------------------------------------------- charge_stop
 
     @mock.patch('RivianAPI.requests.post')
-    def test_charge_stop_sends_set_charging_session_mutation(self, mock_post):
-        mock_post.return_value = _Resp(200, {'data': {'setChargingSession': {
-            'success': True,
-        }}})
+    def test_charge_stop_forces_schedule_off(self, mock_post):
+        # Schedule already disabled -> normally a no-op, but charge_stop must
+        # still send the mutation so the vehicle stops charging.
+        existing = {
+            'startTime': 0,
+            'duration': 1440,
+            'location': {},
+            'enabled': False,
+            'weekDays': ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                         'Friday', 'Saturday', 'Sunday'],
+            'amperage': RivianAPI.AMPS_MIN,
+        }
+        mock_post.side_effect = [
+            _Resp(200, {'data': {'getVehicle': {
+                'chargingSchedules': [existing],
+            }}}),
+            _Resp(200, {'data': {'setChargingSchedules': {'success': True}}}),
+        ]
         self.api.vehicle_id = 'veh-1'
         self.api.charge_stop()
-        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_count, 2)
         body = mock_post.call_args.kwargs['json']
-        self.assertEqual(body['operationName'], 'SetChargingSession')
-        self.assertEqual(body['variables'], {
-            'vehicleId': 'veh-1',
-            'chargingSession': {'enabled': False},
-        })
-        # Must hit the charging endpoint, not the gateway.
-        self.assertEqual(mock_post.call_args.args[0], RivianAPI.CHARGING_URL)
+        self.assertEqual(body['operationName'], 'SetChargingSchedule')
+        schedule = body['variables']['chargingSchedules'][0]
+        self.assertFalse(schedule['enabled'])
 
     @mock.patch('RivianAPI.requests.post')
     def test_charge_stop_http_error_does_not_raise(self, mock_post):
