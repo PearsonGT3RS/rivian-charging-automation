@@ -267,9 +267,20 @@ Parsing rules:
 - Scan every meter for the metric we care about and take the newest
   non-null sample (by `timestamp`). Null samples are skipped.
 - `load` = latest `consumptionPower`.
-- `grid` = latest `importPower` if present, else `-exportPower`, else
-  `consumptionPower - productionPower`, else `None`.
+- `grid` = latest `importPower` if non-zero, else `-exportPower` if
+  non-zero, else `consumptionPower - productionPower` (derived), else
+  `None`.
 - Sign convention: grid positive = import, negative = export.
+
+**Zero-reading fallback (2026-11-14):** the dedicated import/export
+meters can report 0W while the inverter CT shows real flow. Observed
+live: the SolarEdge app showed 2007W export but `importPower` /
+`exportPower` read 0W, so `get_power_details()` returned `grid=0.0`.
+The parser now treats a zero import/export reading as "no data" and
+falls back to the derived grid (`consumptionPower - productionPower`),
+which matches the app. A non-zero import/export reading is still
+trusted over the derived value because it accounts for battery/storage
+flows.
 
 The previous implementation expected flat top-level keys
 (`consumptionPower`, `importPower`, `exportPower`) with `date` fields,

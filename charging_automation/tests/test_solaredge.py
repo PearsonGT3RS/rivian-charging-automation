@@ -298,6 +298,65 @@ class TestSolarEdgeUnit(unittest.TestCase):
         api = SolarEdgeAPI(self.creds, token_file=self.token)
         self.assertEqual(api.get_power_details(), (None, None))
 
+    @mock.patch('SolarEdgeAPI.requests.get')
+    def test_power_details_prefers_derived_grid_when_meter_reads_zero(
+            self, mock_get):
+        # Observed 2026-11-14: import/export meter read 0W while the inverter
+        # CT showed 2007W export. The derived grid (load - production) must
+        # win over a zero import/export reading.
+        mock_get.return_value = _Resp(200, {
+            'meters': {
+                'M-PROD-001': {
+                    'productionPower': {'unit': 'W', 'values': [
+                        {'timestamp': '2026-01-01T12:00:00Z', 'value': 5000},
+                    ]},
+                },
+                'M-CONS-001': {
+                    'consumptionPower': {'unit': 'W', 'values': [
+                        {'timestamp': '2026-01-01T12:00:00Z', 'value': 2993},
+                    ]},
+                },
+                'M-EXPORT-001': {
+                    'exportPower': {'unit': 'W', 'values': [
+                        {'timestamp': '2026-01-01T12:00:00Z', 'value': 0},
+                    ]},
+                },
+            },
+        })
+        api = SolarEdgeAPI(self.creds, token_file=self.token)
+        load, grid = api.get_power_details()
+        self.assertEqual(load, 2993.0)
+        # 2993 - 5000 = -2007 (exporting 2007W), matching the app.
+        self.assertEqual(grid, -2007.0)
+
+    @mock.patch('SolarEdgeAPI.requests.get')
+    def test_power_details_prefers_nonzero_import_meter(self, mock_get):
+        # When the import meter reports a real value, trust it over the
+        # derived grid (it accounts for battery/storage flows).
+        mock_get.return_value = _Resp(200, {
+            'meters': {
+                'M-PROD-001': {
+                    'productionPower': {'unit': 'W', 'values': [
+                        {'timestamp': '2026-01-01T12:00:00Z', 'value': 5000},
+                    ]},
+                },
+                'M-CONS-001': {
+                    'consumptionPower': {'unit': 'W', 'values': [
+                        {'timestamp': '2026-01-01T12:00:00Z', 'value': 3000},
+                    ]},
+                },
+                'M-IMPORT-001': {
+                    'importPower': {'unit': 'W', 'values': [
+                        {'timestamp': '2026-01-01T12:00:00Z', 'value': 1500},
+                    ]},
+                },
+            },
+        })
+        api = SolarEdgeAPI(self.creds, token_file=self.token)
+        load, grid = api.get_power_details()
+        self.assertEqual(load, 3000.0)
+        self.assertEqual(grid, 1500.0)
+
 
 @unittest.skipUnless(os.environ.get('SOLAREDGE_LIVE') == '1',
                      'Set SOLAREDGE_LIVE=1 to run live SolarEdge connectivity test')

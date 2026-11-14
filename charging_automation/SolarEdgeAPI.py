@@ -340,14 +340,24 @@ class SolarEdgeAPI:
         import_power = _latest('importPower')
         export_power = _latest('exportPower')
         production = _latest('productionPower')
-        # Prefer the explicit import/export meters when present; otherwise
-        # derive grid from load - pv at the call site.
-        if import_power is not None:
+
+        # Derive grid from the production/consumption meters when both are
+        # present. This is the most reliable source: the dedicated
+        # import/export meters can lag or report 0W while the inverter CT
+        # shows real flow (observed 2026-11-14: app showed 2007W export but
+        # importPower/exportPower read 0W).
+        derived_grid = None
+        if load is not None and production is not None:
+            derived_grid = load - production
+
+        # Prefer the explicit import/export meters when they report a
+        # non-zero value; otherwise fall back to the derived grid.
+        if import_power:
             grid = import_power
-        elif export_power is not None:
+        elif export_power:
             grid = -export_power
-        elif load is not None and production is not None:
-            grid = load - production
+        elif derived_grid is not None:
+            grid = derived_grid
         else:
             grid = None
         return load, grid
