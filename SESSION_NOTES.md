@@ -276,6 +276,17 @@ The previous implementation expected flat top-level keys
 which never matched the real v2 response and always returned
 `(None, None)`. That is fixed here.
 
+Live verification — PASSED 2026-11-14:
+    cd charging_automation && SOLAREDGE_LIVE=1 \
+      python -m unittest tests.test_solaredge.TestSolarEdgeLive.test_live_power_details -v
+Observed output:
+    [LIVE] meter telemetry: load=10284.516 grid=0.0
+Interpretation: the site has a consumption meter (load reported) and an
+import/export meter that was reading 0W at the sample instant (grid=0.0,
+i.e. neither importing nor exporting). The parser correctly picked the
+newest non-null sample across meters. Note the meter reports fractional
+watts (10284.516), which is expected.
+
 ## SolarEdge token keepalive (as of session 4, commit c00e0bf)
 
 SolarEdge v2 invalidates refresh tokens after 14 days of non-use. To
