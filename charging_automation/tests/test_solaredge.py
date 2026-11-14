@@ -323,3 +323,19 @@ class TestSolarEdgeLive(unittest.TestCase):
         )
         self.assertIsNotNone(pf)
         print(f'\n[LIVE] pv={pf.pv:.0f}W load={pf.load:.0f}W grid={pf.grid:.0f}W')
+
+    def test_live_power_details(self):
+        """Exercise the v2 meter-telemetry parser against the real API.
+
+        Sites without consumption/import/export meters will return
+        (None, None); that is a valid outcome, so we only assert the
+        return shape and print whatever we got.
+        """
+        api = SolarEdgeAPI('/app/config.json')
+        load, grid = api.get_power_details()
+        print(f'\n[LIVE] meter telemetry: load={load} grid={grid}')
+        if load is not None:
+            self.assertGreaterEqual(load, 0.0)
+        if grid is not None:
+            # Sign convention: positive = import, negative = export.
+            self.assertIsInstance(grid, float)
