@@ -153,7 +153,59 @@ class TestSolarEdgeUnit(unittest.TestCase):
 
     @mock.patch('SolarEdgeAPI.requests.get')
     def test_power_flow_without_provider_assumes_balanced(self, mock_get):
-        mock_get.return_value = _Resp(200, {'values': [{'value': 3000}]})
+        # /power returns PV; /powerDetails returns no CONSUMPTION meter.
+        mock_get.side_effect = [
+            _Resp(200, {'values': [{'value': 3000}]}),
+            _Resp(200, {'meters': []}),
+        ]
+        api = SolarEdgeAPI(self.creds, token_file=self.token)
+        pf = api.get_current_power_flow()
+        self.assertEqual(pf.pv, 3000.0)
+        self.assertEqual(pf.load, 3000.0)
+        self.assertEqual(pf.grid, 0.0)
+
+    @mock.patch('SolarEdgeAPI.requests.get')
+    def test_power_flow_without_provider_uses_power_details(self, mock_get):
+        # /power -> PV; /powerDetails -> CONSUMPTION + FEED_IN meters.
+        mock_get.side_effect = [
+            _Resp(200, {'values': [{'value': 5000}]}),
+            _Resp(200, {'meters': [
+                {'type': 'CONSUMPTION', 'values': [
+                    {'date': '2026-01-01T12:00:00', 'value': 3000},
+                ]},
+                {'type': 'FEED_IN', 'values': [
+                    {'date': '2026-01-01T12:00:00', 'value': 2000},
+                ]},
+            ]}),
+        ]
+        api = SolarEdgeAPI(self.creds, token_file=self.token)
+        pf = api.get_current_power_flow()
+        self.assertEqual(pf.pv, 5000.0)
+        self.assertEqual(pf.load, 3000.0)
+        # FEED_IN positive = export -> grid negative (import convention).
+        self.assertEqual(pf.grid, -2000.0)
+
+    @mock.patch('SolarEdgeAPI.requests.get')
+    def test_power_flow_without_provider_derives_grid_when_feed_in_missing(
+            self, mock_get):
+        mock_get.side_effect = [
+            _Resp(200, {'values': [{'value': 5000}]}),
+            _Resp(200, {'meters': [
+                {'type': 'CONSUMPTION', 'values': [{'value': 3000}]},
+            ]}),
+        ]
+        api = SolarEdgeAPI(self.creds, token_file=self.token)
+        pf = api.get_current_power_flow()
+        self.assertEqual(pf.load, 3000.0)
+        self.assertEqual(pf.grid, -2000.0)  # exporting 2000W
+
+    @mock.patch('SolarEdgeAPI.requests.get')
+    def test_power_flow_without_provider_power_details_error_falls_back(
+            self, mock_get):
+        mock_get.side_effect = [
+            _Resp(200, {'values': [{'value': 3000}]}),
+            _Resp(500, {}),
+        ]
         api = SolarEdgeAPI(self.creds, token_file=self.token)
         pf = api.get_current_power_flow()
         self.assertEqual(pf.pv, 3000.0)

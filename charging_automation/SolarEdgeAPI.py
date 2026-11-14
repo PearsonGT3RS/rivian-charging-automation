@@ -266,6 +266,59 @@ class SolarEdgeAPI:
             logger.error('Error getting current power: %s', e)
             return None
 
+    def get_power_details(self):
+        """Return (load_watts, grid_watts) from the v2 /powerDetails endpoint.
+
+        v2 /powerDetails exposes per-meter breakdowns:
+          - CONSUMPTION: site load (requires a consumption meter)
+          - FEED_IN:     grid export (positive = export)
+          - PRODUCTION:  PV production
+          - SELF_CONSUMPTION: PV consumed on-site
+
+        Returns (load, grid) in watts with our PowerFlow convention
+        (grid positive = import). Either value may be None if the
+        corresponding meter is not configured or has no recent sample.
+        """
+        now = datetime.now(timezone.utc)
+        frm = (now - timedelta(minutes=60)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        to = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        try:
+            data = self._get(f'/sites/{self.site_id}/powerDetails', params={
+                'from': frm,
+                'to': to,
+                'meters': 'CONSUMPTION,FEED_IN,PRODUCTION',
+            })
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code in (401, 403):
+                logger.error(
+                    'SolarEdge powerDetails auth failed (%d). The refresh '
+                    'token is likely expired; re-run the OAuth bootstrap.',
+                    e.response.status_code,
+                )
+            else:
+                logger.error('Error getting power details: %s', e)
+            return None, None
+        except requests.exceptions.RequestException as e:
+            logger.error('Error getting power details: %s', e)
+            return None, None
+
+        def _latest(meter_type):
+            for meter in data.get('meters') or []:
+                if meter.get('type') != meter_type:
+                    continue
+                for sample in reversed(meter.get('values') or []):
+                    value = sample.get('value')
+                    if value is not None:
+                        return float(value)
+            return None
+
+        load = _latest('CONSUMPTION')
+        feed_in = _latest('FEED_IN')
+        # FEED_IN is positive when exporting; our PowerFlow.grid is positive
+        # when importing, so negate.
+        grid = -feed_in if feed_in is not None else None
+        return load, grid
+
     def get_current_power_flow(self, load_provider=None, pv_override=None):
         """
         Compute power flow from v2 PV data plus an external load source.
@@ -294,13 +347,28 @@ class SolarEdgeAPI:
                 raise LoadUnavailableError(
                     'load_provider returned None; cannot compute grid'
                 )
+            grid = load - pv
         else:
-            logger.warning(
-                'SolarEdge v2: no load_provider; assuming load == pv (grid == 0)'
-            )
-            load = pv
-
-        grid = load - pv
+            # No external load provider (e.g. Home Assistant is down). Try the
+            # SolarEdge /powerDetails endpoint, which exposes CONSUMPTION and
+            # FEED_IN meters when the site has a consumption meter installed.
+            se_load, se_grid = self.get_power_details()
+            if se_load is not None:
+                load = se_load
+                # Prefer the FEED_IN-derived grid when available (it accounts
+                # for battery/storage flows); otherwise derive from load - pv.
+                grid = se_grid if se_grid is not None else (load - pv)
+                logger.info(
+                    'SolarEdge v2: using /powerDetails for load/grid '
+                    '(load=%.0fW grid=%.0fW)', load, grid,
+                )
+            else:
+                logger.warning(
+                    'SolarEdge v2: no load_provider and no CONSUMPTION meter; '
+                    'assuming load == pv (grid == 0)'
+                )
+                load = pv
+                grid = 0.0
         logger.info(
             'Power flow: pv=%.0fW load=%.0fW grid=%.0fW (positive grid = import)',
             pv, load, grid,
