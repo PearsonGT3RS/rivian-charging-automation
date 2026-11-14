@@ -16,6 +16,8 @@ VOLTS = 240                  # nominal charging voltage
 CHANGE_THRESHOLD_WATTS = 500 # ignore fluctuations smaller than ~2A Rivian step
 RIVIAN_MIN_WATTS = RivianAPI.AMPS_MIN * VOLTS  # 8A * 240V = 1920W
 TESLA_MIN_WATTS = TeslaAPI.AMPS_MIN * VOLTS    # 5A * 240V = 1200W
+RIVIAN_MAX_WATTS = RivianAPI.AMPS_MAX * VOLTS  # 48A * 240V = 11520W
+TESLA_MAX_WATTS = TeslaAPI.AMPS_MAX * VOLTS    # 48A * 240V = 11520W
 BMS_BUFFER_PCT = 2           # % buffer to prevent waking for minor battery sag
 
 class AutomationMode(Enum):
@@ -545,20 +547,18 @@ def run_charging_automation():
     # Safety net: clamp each EV draw to its hardware maximum. A bad sensor
     # sample (or a misconfigured load list that double-counts the EV) can
     # report an implausible draw; clamping keeps solar_for_ev sane.
-    rivian_max_watts = RivianAPI.AMPS_MAX * VOLTS
-    tesla_max_watts = TeslaAPI.AMPS_MAX * VOLTS
-    if rivian_draw > rivian_max_watts:
+    if rivian_draw > RIVIAN_MAX_WATTS:
         logger.warning(
             'Rivian draw %.0fW exceeds hardware max %.0fW; clamping.',
-            rivian_draw, rivian_max_watts,
+            rivian_draw, RIVIAN_MAX_WATTS,
         )
-        rivian_draw = rivian_max_watts
-    if tesla_draw > tesla_max_watts:
+        rivian_draw = RIVIAN_MAX_WATTS
+    if tesla_draw > TESLA_MAX_WATTS:
         logger.warning(
             'Tesla draw %.0fW exceeds hardware max %.0fW; clamping.',
-            tesla_draw, tesla_max_watts,
+            tesla_draw, TESLA_MAX_WATTS,
         )
-        tesla_draw = tesla_max_watts
+        tesla_draw = TESLA_MAX_WATTS
 
     current_power = rivian_draw + tesla_draw
     solar_for_ev = current_power + available_power
