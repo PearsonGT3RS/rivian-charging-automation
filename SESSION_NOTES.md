@@ -307,6 +307,55 @@ avoid the full OAuth dance, `run_charging_automation()` calls
 refresh fires at most once per `KEEPALIVE_INTERVAL_SECONDS` (6 days),
 leaving an 8-day margin before the 14-day expiry.
 
+## Emporia load double-count fix (2026-11-14)
+
+**Root cause of the 2026-11-14 production incident** (Tesla stopped
+charging at 12.4kW PV):
+
+`emporia-load-entities` in `config.json` listed BOTH the whole-panel
+sensors AND the per-EV circuit sensors:
+
+    "emporia-load-entities": [
+        "sensor.right_panel_connection_power_minute_average",
+        "sensor.left_side_connection_power_minute_average",
+        "sensor.rivian_charger_power_minute_average",
+        "sensor.external_lighting_power_minute_average"
+    ]
+
+The panel sensors already include the EV circuits, so `load` double-counted
+them:
+
+    load = panels + rivian + tesla
+         = (house + rivian + tesla) + rivian + tesla
+
+Observed: `pv=12401W load=25417W grid=13016W`, `Tesla draw=11846W`,
+`solar_for_ev=-1171W` → Tesla stopped. True house load was ~13.6kW.
+
+**Config fix (no code change):** remove the per-EV sensors from
+`emporia-load-entities`. Keep them only as `emporia-rivian-entity` /
+`emporia-tesla-entity`. After this, `solar_for_ev = ev_draw + (pv - load)`
+cancels correctly to `pv - house`.
+
+**Code changes:**
+
+1. `validate_emporia_config()` warning inverted. It now warns when a
+   per-EV entity IS listed in `emporia-load-entities` (double-count risk),
+   not when it is missing. The docstring documents the whole-panel
+   assumption.
+2. EV-draw clamp: each per-EV draw is clamped to `AMPS_MAX * VOLTS`
+   (Rivian 48A*240V=11520W, Tesla 48A*240V=11520W). A warning is logged
+   when the clamp fires.
+3. Negative-budget clamp: if `solar_for_ev < 0` while `power_flow.pv > 0`,
+   clamp to 0 and log a warning. The next cycle re-evaluates with fresh
+   data. This prevents a bad sensor sample from stopping a legitimate
+   solar charge.
+
+Tests added: `test_warns_on_2026_11_14_double_count`,
+`test_ev_draw_clamped_to_hardware_max`,
+`test_negative_solar_for_ev_clamped_when_pv_producing`. The
+`TestValidateEmporiaConfig` assertions were inverted to match the new
+warning direction.
+
 ## Solar allocation logic (as of session 3, commit 2351063)
 
 `run_charging_automation()` computes the total solar budget for the EVs as:

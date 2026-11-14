@@ -59,12 +59,20 @@ def get_night_charging_limit(hubitat):
 
 def validate_emporia_config(config):
     """
-    Warn if a per-EV Emporia entity is configured but not aggregated into
-    emporia-load-entities.
+    Warn if a per-EV Emporia entity is ALSO listed in emporia-load-entities.
 
-    The solar allocation math assumes the top-level load sensors already
-    include the EV circuits (see SESSION_NOTES.md). If they don't, `load`
-    under-reports, `grid` is wrong, and the EV-draw correction double-counts.
+    The solar allocation math assumes the top-level load sensors are
+    whole-panel sensors that already include the EV circuits (see
+    SESSION_NOTES.md). The per-EV sensors are then added back to the surplus
+    to recover the total solar budget:
+
+        solar_for_ev = ev_draw + (pv - load)
+
+    If a per-EV sensor is also aggregated into emporia-load-entities, `load`
+    double-counts that EV's draw, `grid` is wrong, and `solar_for_ev` is
+    under-reported (observed 2026-11-14: Tesla stopped charging at 12.4kW PV
+    because load double-counted its 11.8kW draw).
+
     This is a warning only; it does not change behavior.
     """
     load_entities = set(config.emporia_load_entities or [])
@@ -74,11 +82,12 @@ def validate_emporia_config(config):
         ('emporia-rivian-entity', config.emporia_rivian_entity),
         ('emporia-tesla-entity', config.emporia_tesla_entity),
     ):
-        if entity and entity not in load_entities:
+        if entity and entity in load_entities:
             logger.warning(
-                '%s (%s) is not listed in emporia-load-entities. The EV-draw '
-                'correction assumes the load sensors already include the EV '
-                'circuits; if they do not, grid will be miscomputed.',
+                '%s (%s) is also listed in emporia-load-entities. The load '
+                'sensors are assumed to be whole-panel and already include '
+                'the EV circuits; listing the per-EV sensor here double-counts '
+                'its draw and under-reports solar_for_ev.',
                 label, entity,
             )
 
@@ -533,8 +542,38 @@ def run_charging_automation():
         except Exception as e:
             logger.warning('Failed to read Tesla draw sensor: %s', e)
 
+    # Safety net: clamp each EV draw to its hardware maximum. A bad sensor
+    # sample (or a misconfigured load list that double-counts the EV) can
+    # report an implausible draw; clamping keeps solar_for_ev sane.
+    rivian_max_watts = RivianAPI.AMPS_MAX * VOLTS
+    tesla_max_watts = TeslaAPI.AMPS_MAX * VOLTS
+    if rivian_draw > rivian_max_watts:
+        logger.warning(
+            'Rivian draw %.0fW exceeds hardware max %.0fW; clamping.',
+            rivian_draw, rivian_max_watts,
+        )
+        rivian_draw = rivian_max_watts
+    if tesla_draw > tesla_max_watts:
+        logger.warning(
+            'Tesla draw %.0fW exceeds hardware max %.0fW; clamping.',
+            tesla_draw, tesla_max_watts,
+        )
+        tesla_draw = tesla_max_watts
+
     current_power = rivian_draw + tesla_draw
     solar_for_ev = current_power + available_power
+
+    # Safety net: if PV is producing but the computed budget is negative,
+    # treat it as a bad sample and clamp to 0 rather than stopping a
+    # legitimate solar charge. The next cycle re-evaluates with fresh data.
+    if solar_for_ev < 0 and power_flow.pv > 0:
+        logger.warning(
+            'solar_for_ev=%.0fW is negative while PV=%.0fW is producing; '
+            'clamping to 0 for this cycle.',
+            solar_for_ev, power_flow.pv,
+        )
+        solar_for_ev = 0.0
+
     logger.info(
         'Current EV Draw: %.0fW (Rivian %.0fW + Tesla %.0fW) | '
         'Total Solar for EVs: %.0fW',

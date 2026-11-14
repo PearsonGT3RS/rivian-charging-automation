@@ -240,7 +240,7 @@ class TestConfigEmporiaEntities(unittest.TestCase):
 
 
 class TestValidateEmporiaConfig(unittest.TestCase):
-    """Verify the startup warning for per-EV entities missing from load entities."""
+    """Verify the startup warning for per-EV entities that are also in load entities."""
 
     def _cfg(self, load_entities, rivian_entity=None, tesla_entity=None):
         return _FakeConfigWithEmporia(
@@ -249,26 +249,18 @@ class TestValidateEmporiaConfig(unittest.TestCase):
             load_entities=load_entities,
         )
 
-    def test_no_warning_when_both_present(self):
+    def test_no_warning_when_ev_entities_absent_from_load_list(self):
+        # Correct config: load list is whole-panel only; per-EV sensors are
+        # configured separately.
         cfg = self._cfg(
-            ['sensor.load_a', 'sensor.rivian', 'sensor.tesla'],
+            ['sensor.load_a', 'sensor.load_b'],
             rivian_entity='sensor.rivian',
             tesla_entity='sensor.tesla',
         )
         with self.assertNoLogs(ca.logger, level='WARNING'):
             validate_emporia_config(cfg)
 
-    def test_warns_when_rivian_missing(self):
-        cfg = self._cfg(
-            ['sensor.load_a', 'sensor.tesla'],
-            rivian_entity='sensor.rivian',
-            tesla_entity='sensor.tesla',
-        )
-        with self.assertLogs(ca.logger, level='WARNING') as cm:
-            validate_emporia_config(cfg)
-        self.assertTrue(any('emporia-rivian-entity' in m for m in cm.output))
-
-    def test_warns_when_tesla_missing(self):
+    def test_warns_when_rivian_in_load_list(self):
         cfg = self._cfg(
             ['sensor.load_a', 'sensor.rivian'],
             rivian_entity='sensor.rivian',
@@ -276,17 +268,43 @@ class TestValidateEmporiaConfig(unittest.TestCase):
         )
         with self.assertLogs(ca.logger, level='WARNING') as cm:
             validate_emporia_config(cfg)
+        self.assertTrue(any('emporia-rivian-entity' in m for m in cm.output))
+
+    def test_warns_when_tesla_in_load_list(self):
+        cfg = self._cfg(
+            ['sensor.load_a', 'sensor.tesla'],
+            rivian_entity='sensor.rivian',
+            tesla_entity='sensor.tesla',
+        )
+        with self.assertLogs(ca.logger, level='WARNING') as cm:
+            validate_emporia_config(cfg)
         self.assertTrue(any('emporia-tesla-entity' in m for m in cm.output))
 
-    def test_warns_for_both_missing(self):
+    def test_warns_for_both_in_load_list(self):
         cfg = self._cfg(
-            ['sensor.load_a'],
+            ['sensor.load_a', 'sensor.rivian', 'sensor.tesla'],
             rivian_entity='sensor.rivian',
             tesla_entity='sensor.tesla',
         )
         with self.assertLogs(ca.logger, level='WARNING') as cm:
             validate_emporia_config(cfg)
         self.assertTrue(any('emporia-rivian-entity' in m for m in cm.output))
+        self.assertTrue(any('emporia-tesla-entity' in m for m in cm.output))
+
+    def test_warns_on_2026_11_14_double_count(self):
+        # Reproduces the production config that stopped Tesla charging:
+        # both panel sensors AND the Tesla circuit sensor were listed in
+        # emporia-load-entities, so `load` double-counted the Tesla draw.
+        cfg = self._cfg(
+            [
+                'sensor.right_panel_connection_power_minute_average',
+                'sensor.left_side_connection_power_minute_average',
+                'sensor.external_lighting_power_minute_average',
+            ],
+            tesla_entity='sensor.external_lighting_power_minute_average',
+        )
+        with self.assertLogs(ca.logger, level='WARNING') as cm:
+            validate_emporia_config(cfg)
         self.assertTrue(any('emporia-tesla-entity' in m for m in cm.output))
 
     def test_no_warning_when_no_per_ev_entities(self):
@@ -443,12 +461,13 @@ class TestRunChargingAutomationEvDraw(unittest.TestCase):
         self.assertEqual(solar, 6000)
 
     def test_solar_for_ev_with_grid_import(self):
-        # grid positive (importing): available_power negative
+        # grid positive (importing): available_power negative.
         # pv=1000, load=3000 -> grid=2000 -> available=-2000
-        # rivian_draw=1500, tesla_draw=0 -> solar_for_ev = -500
+        # rivian_draw=1500, tesla_draw=0 -> raw solar_for_ev = -500.
+        # PV is producing (>0), so the safety net clamps to 0.
         solar = self._run(pv=1000, load=3000, grid=2000,
                           rivian_draw=1500, tesla_draw=0)
-        self.assertEqual(solar, -500)
+        self.assertEqual(solar, 0.0)
 
     def test_missing_rivian_sensor_falls_back_to_zero(self):
         # rivian_entity=None -> rivian_draw_provider is None -> rivian_draw=0
@@ -481,6 +500,22 @@ class TestRunChargingAutomationEvDraw(unittest.TestCase):
                           rivian_draw=2000, tesla_draw=9999,
                           tesla_connected=False)
         self.assertEqual(solar, 8000)  # 2000 + 0 + 6000
+
+    def test_ev_draw_clamped_to_hardware_max(self):
+        # Tesla sensor reports 11846W (the 2026-11-14 double-count value).
+        # Tesla AMPS_MAX * VOLTS = 48 * 240 = 11520W, so the draw is clamped.
+        # solar_for_ev = 11520 + 0 + 6000 = 17520
+        solar = self._run(pv=8000, load=2000, grid=-6000,
+                          rivian_draw=0, tesla_draw=11846)
+        self.assertEqual(solar, 17520)
+
+    def test_negative_solar_for_ev_clamped_when_pv_producing(self):
+        # pv=1000, load=3000 -> grid=2000 -> available=-2000
+        # rivian_draw=1500, tesla_draw=0 -> raw solar_for_ev = -500
+        # PV is producing (>0), so the safety net clamps to 0.
+        solar = self._run(pv=1000, load=3000, grid=2000,
+                          rivian_draw=1500, tesla_draw=0)
+        self.assertEqual(solar, 0.0)
 
 
 class TestRunChargingAutomationDaytimeCycle(unittest.TestCase):
