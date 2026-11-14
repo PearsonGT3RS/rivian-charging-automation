@@ -350,21 +350,22 @@ class SolarEdgeAPI:
             grid = load - pv
         else:
             # No external load provider (e.g. Home Assistant is down). Try the
-            # SolarEdge /powerDetails endpoint, which exposes CONSUMPTION and
-            # FEED_IN meters when the site has a consumption meter installed.
+            # SolarEdge meter telemetry endpoint, which exposes consumption and
+            # import/export meters when the site has them installed.
             se_load, se_grid = self.get_power_details()
             if se_load is not None:
                 load = se_load
-                # Prefer the FEED_IN-derived grid when available (it accounts
-                # for battery/storage flows); otherwise derive from load - pv.
+                # Prefer the import/export-derived grid when available (it
+                # accounts for battery/storage flows); otherwise derive from
+                # load - pv.
                 grid = se_grid if se_grid is not None else (load - pv)
                 logger.info(
-                    'SolarEdge v2: using /powerDetails for load/grid '
+                    'SolarEdge v2: using meter telemetry for load/grid '
                     '(load=%.0fW grid=%.0fW)', load, grid,
                 )
             else:
                 logger.warning(
-                    'SolarEdge v2: no load_provider and no CONSUMPTION meter; '
+                    'SolarEdge v2: no load_provider and no consumption meter; '
                     'assuming load == pv (grid == 0)'
                 )
                 load = pv
