@@ -267,7 +267,7 @@ class SolarEdgeAPI:
             return None
 
     def get_power_details(self):
-        """Return (load_watts, grid_watts) from the v2 /powerDetails endpoint.
+        """Return (load_watts, grid_watts) from the v2 meter telemetry endpoint.
 
         v2 /powerDetails exposes per-meter breakdowns:
           - CONSUMPTION: site load (requires a consumption meter)
@@ -283,40 +283,44 @@ class SolarEdgeAPI:
         frm = (now - timedelta(minutes=60)).strftime('%Y-%m-%dT%H:%M:%SZ')
         to = now.strftime('%Y-%m-%dT%H:%M:%SZ')
         try:
-            data = self._get(f'/sites/{self.site_id}/powerDetails', params={
+            data = self._get(f'/sites/{self.site_id}/meters/telemetry', params={
                 'from': frm,
                 'to': to,
-                'meters': 'CONSUMPTION,FEED_IN,PRODUCTION',
+                'resolution': 'QUARTER_HOUR',
             })
         except requests.exceptions.HTTPError as e:
             if e.response is not None and e.response.status_code in (401, 403):
                 logger.error(
-                    'SolarEdge powerDetails auth failed (%d). The refresh '
+                    'SolarEdge meter telemetry auth failed (%d). The refresh '
                     'token is likely expired; re-run the OAuth bootstrap.',
                     e.response.status_code,
                 )
             else:
-                logger.error('Error getting power details: %s', e)
+                logger.error('Error getting meter telemetry: %s', e)
             return None, None
         except requests.exceptions.RequestException as e:
-            logger.error('Error getting power details: %s', e)
+            logger.error('Error getting meter telemetry: %s', e)
             return None, None
 
-        def _latest(meter_type):
-            for meter in data.get('meters') or []:
-                if meter.get('type') != meter_type:
-                    continue
-                for sample in reversed(meter.get('values') or []):
-                    value = sample.get('value')
-                    if value is not None:
-                        return float(value)
+        def _latest(metric):
+            # v2 returns each metric as a list of {date, value} samples.
+            for sample in reversed(data.get(metric) or []):
+                value = sample.get('value')
+                if value is not None:
+                    return float(value)
             return None
 
-        load = _latest('CONSUMPTION')
-        feed_in = _latest('FEED_IN')
-        # FEED_IN is positive when exporting; our PowerFlow.grid is positive
-        # when importing, so negate.
-        grid = -feed_in if feed_in is not None else None
+        load = _latest('consumptionPower')
+        import_power = _latest('importPower')
+        export_power = _latest('exportPower')
+        # Prefer the explicit import/export meters when present; otherwise
+        # derive grid from load - pv at the call site.
+        if import_power is not None:
+            grid = import_power
+        elif export_power is not None:
+            grid = -export_power
+        else:
+            grid = None
         return load, grid
 
     def get_current_power_flow(self, load_provider=None, pv_override=None):
