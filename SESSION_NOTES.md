@@ -240,6 +240,42 @@ The two inverter sensors are Modbus-backed Emporia sensors exposed via
 Home Assistant. They must be summed because the site has two inverters
 (lead + follower).
 
+## Power details (v2 meter telemetry)
+
+`SolarEdgeAPI.get_power_details()` reads
+`/sites/{id}/meters/telemetry` and returns `(load_watts, grid_watts)`.
+
+The v2 response shape is a **dict of meters keyed by meter ID**, each with
+per-metric objects:
+
+    {
+      "period": {"from": "...", "to": "..."},
+      "resolution": "QUARTER_HOUR",
+      "meters": {
+        "M-PROD-001": {
+          "productionPower":  {"unit": "W", "values": [
+              {"timestamp": "2026-01-01T00:00:00Z", "value": 6000}, ...]},
+          "productionEnergy": {"unit": "WH", "values": [...]}
+        },
+        "M-CONS-001": {"consumptionPower": {...}},
+        "M-IMPORT-001": {"importPower": {...}},
+        "M-EXPORT-001": {"exportPower": {...}}
+      }
+    }
+
+Parsing rules:
+- Scan every meter for the metric we care about and take the newest
+  non-null sample (by `timestamp`). Null samples are skipped.
+- `load` = latest `consumptionPower`.
+- `grid` = latest `importPower` if present, else `-exportPower`, else
+  `consumptionPower - productionPower`, else `None`.
+- Sign convention: grid positive = import, negative = export.
+
+The previous implementation expected flat top-level keys
+(`consumptionPower`, `importPower`, `exportPower`) with `date` fields,
+which never matched the real v2 response and always returned
+`(None, None)`. That is fixed here.
+
 ## SolarEdge token keepalive (as of session 4, commit c00e0bf)
 
 SolarEdge v2 invalidates refresh tokens after 14 days of non-use. To

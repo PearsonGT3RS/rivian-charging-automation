@@ -170,9 +170,23 @@ class TestSolarEdgeUnit(unittest.TestCase):
         mock_get.side_effect = [
             _Resp(200, {'values': [{'value': 5000}]}),
             _Resp(200, {
-                'productionPower': [{'date': '2026-01-01T12:00:00', 'value': 5000}],
-                'consumptionPower': [{'date': '2026-01-01T12:00:00', 'value': 3000}],
-                'exportPower': [{'date': '2026-01-01T12:00:00', 'value': 2000}],
+                'meters': {
+                    'M-PROD-001': {
+                        'productionPower': {'unit': 'W', 'values': [
+                            {'timestamp': '2026-01-01T12:00:00Z', 'value': 5000},
+                        ]},
+                    },
+                    'M-CONS-001': {
+                        'consumptionPower': {'unit': 'W', 'values': [
+                            {'timestamp': '2026-01-01T12:00:00Z', 'value': 3000},
+                        ]},
+                    },
+                    'M-EXPORT-001': {
+                        'exportPower': {'unit': 'W', 'values': [
+                            {'timestamp': '2026-01-01T12:00:00Z', 'value': 2000},
+                        ]},
+                    },
+                },
             }),
         ]
         api = SolarEdgeAPI(self.creds, token_file=self.token)
@@ -187,8 +201,18 @@ class TestSolarEdgeUnit(unittest.TestCase):
         mock_get.side_effect = [
             _Resp(200, {'values': [{'value': 1000}]}),
             _Resp(200, {
-                'consumptionPower': [{'value': 4000}],
-                'importPower': [{'value': 3000}],
+                'meters': {
+                    'M-CONS-001': {
+                        'consumptionPower': {'unit': 'W', 'values': [
+                            {'timestamp': '2026-01-01T12:00:00Z', 'value': 4000},
+                        ]},
+                    },
+                    'M-IMPORT-001': {
+                        'importPower': {'unit': 'W', 'values': [
+                            {'timestamp': '2026-01-01T12:00:00Z', 'value': 3000},
+                        ]},
+                    },
+                },
             }),
         ]
         api = SolarEdgeAPI(self.creds, token_file=self.token)
@@ -202,7 +226,13 @@ class TestSolarEdgeUnit(unittest.TestCase):
         mock_get.side_effect = [
             _Resp(200, {'values': [{'value': 5000}]}),
             _Resp(200, {
-                'consumptionPower': [{'value': 3000}],
+                'meters': {
+                    'M-CONS-001': {
+                        'consumptionPower': {'unit': 'W', 'values': [
+                            {'timestamp': '2026-01-01T12:00:00Z', 'value': 3000},
+                        ]},
+                    },
+                },
             }),
         ]
         api = SolarEdgeAPI(self.creds, token_file=self.token)
@@ -222,6 +252,51 @@ class TestSolarEdgeUnit(unittest.TestCase):
         self.assertEqual(pf.pv, 3000.0)
         self.assertEqual(pf.load, 3000.0)
         self.assertEqual(pf.grid, 0.0)
+
+    @mock.patch('SolarEdgeAPI.requests.get')
+    def test_power_details_picks_latest_sample_across_meters(self, mock_get):
+        # Two meters report consumptionPower; the newest timestamp wins.
+        mock_get.return_value = _Resp(200, {
+            'meters': {
+                'M-CONS-001': {
+                    'consumptionPower': {'unit': 'W', 'values': [
+                        {'timestamp': '2026-01-01T12:00:00Z', 'value': 1000},
+                        {'timestamp': '2026-01-01T12:15:00Z', 'value': 2000},
+                    ]},
+                },
+                'M-CONS-002': {
+                    'consumptionPower': {'unit': 'W', 'values': [
+                        {'timestamp': '2026-01-01T12:10:00Z', 'value': 1500},
+                    ]},
+                },
+            },
+        })
+        api = SolarEdgeAPI(self.creds, token_file=self.token)
+        load, grid = api.get_power_details()
+        self.assertEqual(load, 2000.0)
+        self.assertIsNone(grid)
+
+    @mock.patch('SolarEdgeAPI.requests.get')
+    def test_power_details_skips_null_samples(self, mock_get):
+        mock_get.return_value = _Resp(200, {
+            'meters': {
+                'M-CONS-001': {
+                    'consumptionPower': {'unit': 'W', 'values': [
+                        {'timestamp': '2026-01-01T12:00:00Z', 'value': 1000},
+                        {'timestamp': '2026-01-01T12:15:00Z', 'value': None},
+                    ]},
+                },
+            },
+        })
+        api = SolarEdgeAPI(self.creds, token_file=self.token)
+        load, _ = api.get_power_details()
+        self.assertEqual(load, 1000.0)
+
+    @mock.patch('SolarEdgeAPI.requests.get')
+    def test_power_details_empty_meters_returns_none(self, mock_get):
+        mock_get.return_value = _Resp(200, {'meters': {}})
+        api = SolarEdgeAPI(self.creds, token_file=self.token)
+        self.assertEqual(api.get_power_details(), (None, None))
 
 
 @unittest.skipUnless(os.environ.get('SOLAREDGE_LIVE') == '1',

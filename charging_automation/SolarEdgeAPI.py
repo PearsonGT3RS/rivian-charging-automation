@@ -269,15 +269,27 @@ class SolarEdgeAPI:
     def get_power_details(self):
         """Return (load_watts, grid_watts) from the v2 meter telemetry endpoint.
 
-        v2 /powerDetails exposes per-meter breakdowns:
-          - CONSUMPTION: site load (requires a consumption meter)
-          - FEED_IN:     grid export (positive = export)
-          - PRODUCTION:  PV production
-          - SELF_CONSUMPTION: PV consumed on-site
+        v2 /sites/{id}/meters/telemetry returns a dict of meters keyed by
+        meter ID, each with per-metric objects:
 
-        Returns (load, grid) in watts with our PowerFlow convention
-        (grid positive = import). Either value may be None if the
-        corresponding meter is not configured or has no recent sample.
+            {
+              "meters": {
+                "M-PROD-001": {
+                  "productionPower": {"unit": "W", "values": [
+                      {"timestamp": "...", "value": 6000}, ...]},
+                  "productionEnergy": {...}
+                },
+                "M-CONS-001": {"consumptionPower": {...}},
+                "M-IMPORT-001": {"importPower": {...}},
+                "M-EXPORT-001": {"exportPower": {...}}
+              }
+            }
+
+        We scan every meter for the metrics we care about and take the most
+        recent non-null sample of each. Returns (load, grid) in watts with
+        our PowerFlow convention (grid positive = import). Either value may
+        be None if the corresponding meter is not configured or has no
+        recent sample.
         """
         now = datetime.now(timezone.utc)
         frm = (now - timedelta(minutes=60)).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -302,23 +314,40 @@ class SolarEdgeAPI:
             logger.error('Error getting meter telemetry: %s', e)
             return None, None
 
+        meters = data.get('meters') or {}
+
         def _latest(metric):
-            # v2 returns each metric as a list of {date, value} samples.
-            for sample in reversed(data.get(metric) or []):
-                value = sample.get('value')
-                if value is not None:
-                    return float(value)
-            return None
+            # Scan every meter for the given metric and return the newest
+            # non-null sample. v2 returns each metric as
+            # {"unit": "W", "values": [{"timestamp": ..., "value": ...}]}.
+            best_ts = None
+            best_val = None
+            for meter in meters.values():
+                metric_obj = (meter or {}).get(metric)
+                if not metric_obj:
+                    continue
+                for sample in metric_obj.get('values') or []:
+                    value = sample.get('value')
+                    if value is None:
+                        continue
+                    ts = sample.get('timestamp') or ''
+                    if best_ts is None or ts >= best_ts:
+                        best_ts = ts
+                        best_val = float(value)
+            return best_val
 
         load = _latest('consumptionPower')
         import_power = _latest('importPower')
         export_power = _latest('exportPower')
+        production = _latest('productionPower')
         # Prefer the explicit import/export meters when present; otherwise
         # derive grid from load - pv at the call site.
         if import_power is not None:
             grid = import_power
         elif export_power is not None:
             grid = -export_power
+        elif load is not None and production is not None:
+            grid = load - production
         else:
             grid = None
         return load, grid
