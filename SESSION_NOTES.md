@@ -356,6 +356,27 @@ Tests added: `test_warns_on_2026_11_14_double_count`,
 `TestValidateEmporiaConfig` assertions were inverted to match the new
 warning direction.
 
+**Follow-up (ecda026):** the clamp limits are module-level constants
+`RIVIAN_MAX_WATTS` / `TESLA_MAX_WATTS` (alongside the existing
+`RIVIAN_MIN_WATTS` / `TESLA_MIN_WATTS`), not read from
+`RivianAPI.AMPS_MAX` / `TeslaAPI.AMPS_MAX` at runtime. The tests patch
+`ca.RivianAPI` / `ca.TeslaAPI` with `mock.Mock()`, so reading the class
+attributes at runtime produced `MagicMock` comparisons and 19 test
+errors. Using module-level constants keeps the clamp independent of the
+patched classes and matches the existing convention in the file.
+
+### Session 6 commits (Emporia double-count fix)
+
+- 1b7930b — fix: invert emporia config warning and add EV draw safety
+  clamps (`validate_emporia_config()` now warns when a per-EV entity IS
+  in `emporia-load-entities`; EV-draw clamp to `AMPS_MAX * VOLTS`;
+  negative `solar_for_ev` clamped to 0 when PV is producing; tests
+  inverted and extended)
+- ecda026 — fix: use module-level max watt constants to avoid MagicMock
+  comparison errors (`RIVIAN_MAX_WATTS` / `TESLA_MAX_WATTS` added next
+  to the min-watt constants; clamp code no longer reads
+  `RivianAPI.AMPS_MAX` / `TeslaAPI.AMPS_MAX` at runtime)
+
 ## Solar allocation logic (as of session 3, commit 2351063)
 
 `run_charging_automation()` computes the total solar budget for the EVs as:
