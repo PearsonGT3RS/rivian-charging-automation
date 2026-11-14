@@ -5,6 +5,14 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+class HomeAssistantUnavailable(RuntimeError):
+    """Raised when Home Assistant itself is unreachable (connection error).
+
+    Distinct from a sensor being 'unavailable'/'unknown', which is a normal
+    condition and is reported as a None return value.
+    """
+
+
 class HomeAssistantAPI:
     """Minimal Home Assistant REST client for reading sensor states."""
 
@@ -19,6 +27,22 @@ class HomeAssistantAPI:
             'Content-Type': 'application/json',
         }
 
+    def is_available(self):
+        """Return True if the HA API is reachable, False otherwise.
+
+        Used to short-circuit a cycle when HA is down (e.g. during an upgrade)
+        instead of making many failing per-sensor requests.
+        """
+        url = f'{self.base_url}/api/'
+        try:
+            requests.get(url, headers=self._headers(), timeout=self.timeout)
+        except requests.exceptions.RequestException as e:
+            logger.warning('Home Assistant unreachable: %s', e)
+            return False
+        # Any HTTP response (even 401) means the host is up; we only care
+        # about reachability here.
+        return True
+
     def get_sensor_value(self, entity_id):
         """
         Return the numeric state of a sensor, or None if unavailable/unknown/error.
@@ -30,6 +54,10 @@ class HomeAssistantAPI:
             resp = requests.get(url, headers=self._headers(), timeout=self.timeout)
             resp.raise_for_status()
             data = resp.json()
+        except requests.exceptions.ConnectionError as e:
+            # HA itself is unreachable; let the caller decide whether to abort
+            # the cycle rather than silently treating every sensor as missing.
+            raise HomeAssistantUnavailable(str(e)) from e
         except requests.exceptions.RequestException as e:
             logger.error('HA sensor %s fetch failed: %s', entity_id, e)
             return None

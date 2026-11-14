@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from HomeAssistantAPI import HomeAssistantAPI  # noqa: E402
+from HomeAssistantAPI import HomeAssistantAPI, HomeAssistantUnavailable  # noqa: E402
 
 
 class _Resp:
@@ -80,6 +80,24 @@ class TestHomeAssistantUnit(unittest.TestCase):
     def test_http_error_returns_none(self, mock_get):
         mock_get.return_value = _Resp(500, {})
         self.assertIsNone(self.ha.get_sensor_value('sensor.test'))
+
+    @mock.patch('HomeAssistantAPI.requests.get')
+    def test_connection_error_raises_unavailable(self, mock_get):
+        import requests as _requests
+        mock_get.side_effect = _requests.exceptions.ConnectionError('refused')
+        with self.assertRaises(HomeAssistantUnavailable):
+            self.ha.get_sensor_value('sensor.test')
+
+    @mock.patch('HomeAssistantAPI.requests.get')
+    def test_is_available_true_on_any_response(self, mock_get):
+        mock_get.return_value = _Resp(401, {})
+        self.assertTrue(self.ha.is_available())
+
+    @mock.patch('HomeAssistantAPI.requests.get')
+    def test_is_available_false_on_connection_error(self, mock_get):
+        import requests as _requests
+        mock_get.side_effect = _requests.exceptions.ConnectionError('refused')
+        self.assertFalse(self.ha.is_available())
 
     @mock.patch('HomeAssistantAPI.requests.get')
     def test_sensor_sum(self, mock_get):

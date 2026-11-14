@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from enum import Enum
 from Config import Config
-from HomeAssistantAPI import HomeAssistantAPI
+from HomeAssistantAPI import HomeAssistantAPI, HomeAssistantUnavailable
 from RivianAPI import RivianAPI
 from TeslaAPI import TeslaAPI
 from SolarEdgeAPI import SolarEdgeAPI, LoadUnavailableError
@@ -239,6 +239,12 @@ def run_charging_automation():
     pv_provider = None
     if config.homeassistant_url and config.homeassistant_token:
         ha = HomeAssistantAPI(config.homeassistant_url, config.homeassistant_token)
+        # If HA is down (e.g. during an upgrade), skip the cycle cleanly rather
+        # than making a cascade of failing per-sensor requests and then
+        # aborting on LoadUnavailableError. Charging state is left untouched.
+        if not ha.is_available():
+            logger.warning('Home Assistant is unreachable; skipping cycle.')
+            return CycleResult.IDLE
         validate_emporia_config(config)
 
         if config.emporia_load_entities:
@@ -393,6 +399,10 @@ def run_charging_automation():
         power_flow = solaredge.get_current_power_flow(
             load_provider=load_provider, pv_override=pv_override,
         )
+    except HomeAssistantUnavailable as e:
+        logger.warning('Home Assistant became unreachable mid-cycle; '
+                       'skipping cycle. (%s)', e)
+        return CycleResult.IDLE
     except LoadUnavailableError:
         logger.error('Emporia load unavailable; aborting cycle for safety')
         return CycleResult.IDLE
