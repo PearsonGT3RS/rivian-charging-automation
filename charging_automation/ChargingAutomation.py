@@ -485,18 +485,6 @@ def run_charging_automation():
     rivian_soc = 100
     if rivian_connected:
         rivian_soc = rivian.get_battery_level() or 100
-        
-        # --- FIX: GHOST RIVIAN & VEHICLE LIMIT DETECTION ---
-        # If the API caches 'connected', but it refuses to draw power 
-        # (unplugged or hit internal vehicle limit), safely bypass it.
-        try:
-            # We use get_current_schedule_amp() > 0 to know we tried to charge it
-            if not rivian.is_charging() and rivian.get_current_schedule_amp() > 0:
-                logger.info('Rivian has a schedule but is drawing 0W (Ghost Car). Marking as disconnected.')
-                rivian_connected = False
-                rivian_soc = 100
-        except Exception:
-            pass
 
     logger.info('Rivian SOC: %d%%  Tesla SOC: %d%%', rivian_soc, tesla_soc)
 

@@ -396,7 +396,6 @@ class TestRunChargingAutomationEvDraw(unittest.TestCase):
         fake_rivian.is_charger_connected.return_value = rivian_connected
         fake_rivian.get_battery_level.return_value = rivian_soc
         fake_rivian.is_charging.return_value = False
-        fake_rivian.get_current_schedule_amp.return_value = 0
         fake_rivian.get_current_schedules.return_value = []
 
         fake_tesla = mock.Mock()
@@ -404,7 +403,6 @@ class TestRunChargingAutomationEvDraw(unittest.TestCase):
         fake_tesla.get_battery_level.return_value = tesla_soc
         fake_tesla.get_vehicle_limit.return_value = 100
         fake_tesla.is_charging.return_value = False
-        fake_tesla.get_current_schedule_amp.return_value = 0
 
         fake_solaredge = mock.Mock()
         fake_solaredge.get_current_power_flow.side_effect = (
@@ -540,7 +538,6 @@ class TestRunChargingAutomationDaytimeCycle(unittest.TestCase):
         fake_rivian.is_charger_connected.return_value = rivian_connected
         fake_rivian.get_battery_level.return_value = rivian_soc
         fake_rivian.is_charging.return_value = False
-        fake_rivian.get_current_schedule_amp.return_value = 0
         fake_rivian.get_current_schedules.return_value = []
 
         fake_tesla = mock.Mock()
@@ -548,7 +545,6 @@ class TestRunChargingAutomationDaytimeCycle(unittest.TestCase):
         fake_tesla.get_battery_level.return_value = tesla_soc
         fake_tesla.get_vehicle_limit.return_value = 100
         fake_tesla.is_charging.return_value = False
-        fake_tesla.get_current_schedule_amp.return_value = 0
 
         fake_solaredge = mock.Mock()
         fake_solaredge.get_current_power_flow.side_effect = (
@@ -641,7 +637,6 @@ class TestPvSourceSelection(unittest.TestCase):
         fake_rivian.is_charger_connected.return_value = True
         fake_rivian.get_battery_level.return_value = 40
         fake_rivian.is_charging.return_value = False
-        fake_rivian.get_current_schedule_amp.return_value = 0
         fake_rivian.get_current_schedules.return_value = []
         fake_tesla = mock.Mock()
         fake_tesla.is_charger_connected.return_value = False
@@ -713,7 +708,6 @@ class TestKeepaliveAlwaysRuns(unittest.TestCase):
         fake_rivian.is_charger_connected.return_value = True
         fake_rivian.get_battery_level.return_value = 40
         fake_rivian.is_charging.return_value = False
-        fake_rivian.get_current_schedule_amp.return_value = 0
         fake_rivian.get_current_schedules.return_value = []
         fake_tesla = mock.Mock()
         fake_tesla.is_charger_connected.return_value = False
@@ -782,7 +776,6 @@ class TestRunChargingAutomationEarlyExits(unittest.TestCase):
         fake_rivian.is_charger_connected.return_value = True
         fake_rivian.get_battery_level.return_value = 40
         fake_rivian.is_charging.return_value = False
-        fake_rivian.get_current_schedule_amp.return_value = 0
         fake_rivian.get_current_schedules.return_value = []
 
         fake_tesla = mock.Mock()

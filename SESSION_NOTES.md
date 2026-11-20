@@ -377,6 +377,47 @@ patched classes and matches the existing convention in the file.
   to the min-watt constants; clamp code no longer reads
   `RivianAPI.AMPS_MAX` / `TeslaAPI.AMPS_MAX` at runtime)
 
+## Rivian ghost-car heuristic removed (2026-11-20)
+
+**Symptom:** the Rivian was never managed by the automation. Every cycle
+logged:
+
+    Rivian has a schedule but is drawing 0W (Ghost Car). Marking as disconnected.
+
+even after clearing all charging schedules in the Rivian app. The user
+had to manually start charging before the automation would manage amps.
+
+**Root cause:** the ghost-car check was
+
+    if not rivian.is_charging() and rivian.get_current_schedule_amp() > 0:
+
+Two problems:
+
+1. `get_current_schedule_amp()` returns the *scheduled* amp, not the
+   *commanded* amp. Rivian always has a schedule object; "cleared" in
+   the app means the schedule is disabled, not absent, so the amp value
+   stays > 0. The check therefore fired on every idle cycle.
+2. `is_charging()` is unreliable during the wake/ramp window (same
+   failure mode documented for the Tesla). The car can be plugged in and
+   ready but report `charging_state != 'Charging'` for a few seconds
+   after a command, or while waiting for the schedule window.
+
+Together these marked the Rivian disconnected every cycle, so
+`apply_charging()` was never called for it.
+
+**Fix:** remove the ghost-car heuristic entirely. It was a workaround
+from the `_last_commanded` cache era. Now that per-EV draw comes from
+the Emporia circuit sensors (ground truth), the ghost case is handled
+naturally: a plugged-in Rivian drawing 0W gets `rivian_draw = 0`, is
+still treated as connected, and `apply_charging()` issues a start
+command. If the car is truly unplugged, `is_charger_connected()` will
+return False on its own.
+
+The `get_current_schedule_amp()` mock was removed from the affected
+tests (`TestRunChargingAutomationEvDraw`,
+`TestRunChargingAutomationDaytimeCycle`, `TestPvSourceSelection`,
+`TestKeepaliveAlwaysRuns`, `TestRunChargingAutomationEarlyExits`).
+
 ## Solar allocation logic (as of session 3, commit 2351063)
 
 `run_charging_automation()` computes the total solar budget for the EVs as:
