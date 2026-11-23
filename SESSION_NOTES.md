@@ -418,6 +418,40 @@ tests (`TestRunChargingAutomationEvDraw`,
 `TestRunChargingAutomationDaytimeCycle`, `TestPvSourceSelection`,
 `TestKeepaliveAlwaysRuns`, `TestRunChargingAutomationEarlyExits`).
 
+## Night charging: Rivian above-limit stop (2026-11-20)
+
+**Symptom:** a Rivian plugged in after night mode began kept charging even
+though it was above 50% SOC. It should have stopped within one cycle
+(≤30 min).
+
+**Root cause:** the night branch read SOC as
+
+    soc = vehicle.get_battery_level() or 0
+
+If the Rivian was asleep or the API returned `None`, `soc` became `0`,
+which is `< charging_limit`, so the code took the "start night charge"
+path and never stopped a car that was actually above the limit. The
+night branch also only called `set_schedule_off()` inside the
+`soc >= charging_limit` branch, so a car that started charging before
+the automation saw it was never stopped.
+
+**Fix:**
+
+1. Do not default a failed SOC read to 0. For the Rivian, fall back to
+   `get_cached_battery_level()`; if that is also unavailable, skip the
+   vehicle this cycle rather than starting a charge we can't justify.
+2. Add an explicit safety check before the SOC-vs-limit branch: if the
+   vehicle is currently charging and `soc >= charging_limit`, stop it
+   (`charge_stop()` for Tesla, `set_schedule_off()` for Rivian) and
+   `continue`. This catches a car plugged in mid-night that started
+   charging before the automation saw it.
+
+Tests added in `TestNightChargingRivian`:
+`test_stops_rivian_charging_above_limit`,
+`test_starts_rivian_below_limit`,
+`test_does_not_start_when_soc_unavailable`,
+`test_uses_cached_soc_when_live_read_unavailable`.
+
 ## Solar allocation logic (as of session 3, commit 2351063)
 
 `run_charging_automation()` computes the total solar budget for the EVs as:

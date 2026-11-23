@@ -326,8 +326,12 @@ def run_charging_automation():
                 if not connected:
                     continue
                 
-                # Fetch the SOC for whichever vehicle is currently looping
-                soc = vehicle.get_battery_level() or 0
+                # Fetch the SOC for whichever vehicle is currently looping.
+                # Do NOT default to 0 on a None/0 read: that would look like
+                # an empty battery and start a night charge on a car that is
+                # actually above the limit (observed 2026-11-20: Rivian
+                # plugged in mid-night kept charging above 50%).
+                soc = vehicle.get_battery_level()
 
                 # Sleep-aware check: Wake the car if we need to check SOC for night charging
                 if name == "Tesla":
@@ -347,6 +351,19 @@ def run_charging_automation():
                         if not vehicle.is_charger_connected():
                             logger.info('Tesla woke up but is disconnected. Skipping night charge.')
                             continue
+                else:
+                    # Rivian: if the live SOC read failed, fall back to the
+                    # cached value rather than assuming 0. If we still have
+                    # no SOC, skip this vehicle this cycle instead of
+                    # starting a charge we can't justify.
+                    if not soc:
+                        cached_soc = vehicle.get_cached_battery_level()
+                        if cached_soc:
+                            logger.info('Rivian SOC unavailable; using cached SOC (%d%%).', cached_soc)
+                            soc = cached_soc
+                        else:
+                            logger.info('Rivian SOC unavailable and no cache; skipping night charge this cycle.')
+                            continue
 
                 # --- NEW OPTIMIZATION: State-Aware Night Charging ---
                 # Check current state safely
@@ -354,6 +371,19 @@ def run_charging_automation():
                     is_currently_charging = vehicle.is_charging()
                 except Exception:
                     is_currently_charging = False
+
+                # Explicit safety check: if the vehicle is charging and is
+                # already at/above the night limit, stop it regardless of the
+                # SOC-vs-limit branch below. This catches a car plugged in
+                # mid-night that started charging before the automation saw it.
+                if is_currently_charging and soc >= charging_limit:
+                    logger.info('%s: charging at %d%% (>= limit %d%%). Stopping night charge.',
+                                name, round(soc), charging_limit)
+                    if name == "Tesla":
+                        vehicle.charge_stop()
+                    else:
+                        vehicle.set_schedule_off()
+                    continue
 
                 if soc < charging_limit:
                     if not is_currently_charging:

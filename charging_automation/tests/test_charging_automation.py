@@ -739,6 +739,69 @@ class TestKeepaliveAlwaysRuns(unittest.TestCase):
         mock_keepalive.assert_called_once()
 
 
+class TestNightChargingRivian(unittest.TestCase):
+    """
+    Verify the night branch stops a Rivian that is charging above the night
+    limit, and does not start a charge when the SOC read is unavailable.
+    """
+
+    def _run(self, *, rivian_soc, rivian_charging, cached_soc=None,
+             charging_limit=50):
+        cfg = _FakeConfigWithEmporia()
+
+        fake_rivian = mock.Mock()
+        fake_rivian.is_charger_connected.return_value = True
+        fake_rivian.get_battery_level.return_value = rivian_soc
+        fake_rivian.get_cached_battery_level.return_value = cached_soc
+        fake_rivian.is_charging.return_value = rivian_charging
+
+        fake_tesla = mock.Mock()
+        fake_tesla.is_charger_connected.return_value = False
+
+        fake_solaredge = mock.Mock()
+        fake_solaredge._maybe_keepalive_refresh = mock.Mock()
+
+        with mock.patch.object(ca, 'Config', return_value=cfg), \
+             mock.patch.object(ca, 'RivianAPI', return_value=fake_rivian), \
+             mock.patch.object(ca, 'TeslaAPI', return_value=fake_tesla), \
+             mock.patch.object(ca, 'SolarEdgeAPI', return_value=fake_solaredge), \
+             mock.patch.object(ca, 'HomeAssistantAPI'), \
+             mock.patch.object(ca, 'get_automation_mode',
+                               return_value=AutomationMode.DEFAULT), \
+             mock.patch.object(ca, 'is_night_time', return_value=True), \
+             mock.patch.object(ca, 'get_night_charging_limit',
+                               return_value=charging_limit):
+            ca.run_charging_automation()
+
+        return fake_rivian
+
+    def test_stops_rivian_charging_above_limit(self):
+        # Rivian plugged in mid-night, charging at 80% -> must stop.
+        fake_rivian = self._run(rivian_soc=80, rivian_charging=True)
+        fake_rivian.set_schedule_off.assert_called_once()
+        fake_rivian.set_schedule_amps.assert_not_called()
+
+    def test_starts_rivian_below_limit(self):
+        # Rivian at 30%, not charging -> start night charge at max amps.
+        fake_rivian = self._run(rivian_soc=30, rivian_charging=False)
+        fake_rivian.set_schedule_amps.assert_called_once()
+        fake_rivian.set_schedule_off.assert_not_called()
+
+    def test_does_not_start_when_soc_unavailable(self):
+        # SOC read returns None and no cache -> skip, do not start a charge.
+        fake_rivian = self._run(rivian_soc=None, rivian_charging=False,
+                                cached_soc=None)
+        fake_rivian.set_schedule_amps.assert_not_called()
+        fake_rivian.set_schedule_off.assert_not_called()
+
+    def test_uses_cached_soc_when_live_read_unavailable(self):
+        # SOC read returns None but cache says 80% -> stop, do not start.
+        fake_rivian = self._run(rivian_soc=None, rivian_charging=True,
+                                cached_soc=80)
+        fake_rivian.set_schedule_off.assert_called_once()
+        fake_rivian.set_schedule_amps.assert_not_called()
+
+
 class TestRunChargingAutomationEarlyExits(unittest.TestCase):
     """Exercise the early-return paths of run_charging_automation() without network."""
 
